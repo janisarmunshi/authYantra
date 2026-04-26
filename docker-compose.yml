@@ -1,0 +1,361 @@
+version: '3.8'
+
+# Docker Compose Configuration for authYantra Multi-Org, Multi-Project Setup
+# This demonstrates:
+# - Central Auth Service (8000)
+# - Project 1 (8100-8199)
+# - Project 2 (8200-8299)
+# - Infrastructure services (9000-9499)
+#
+# Usage:
+#   docker-compose up                  # Start all services
+#   docker-compose up auth-service     # Start only auth service
+#   docker-compose logs -f auth-service # View logs
+
+services:
+  # ============================================================================
+  # CORE SERVICES (8000-8099)
+  # ============================================================================
+
+  # PostgreSQL for Auth Service
+  postgres-auth:
+    image: postgres:15-alpine
+    container_name: authyantra-postgres-auth
+    environment:
+      POSTGRES_DB: authYantra
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres_auth_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - authyantra-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache for Auth Service
+  redis-auth:
+    image: redis:7-alpine
+    container_name: authyantra-redis-auth
+    ports:
+      - "8001:6379"
+    networks:
+      - authyantra-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Central Identity/Auth Service
+  auth-service:
+    build:
+      context: ./auth-service
+      dockerfile: Dockerfile
+    container_name: authyantra-auth-service
+    ports:
+      - "8000:8000"
+    environment:
+      ENV: development
+      DEBUG: "True"
+      
+      # Database
+      POSTGRES_HOST: postgres-auth
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: authYantra
+      
+      # JWT
+      JWT_SECRET_KEY: your-very-long-secret-key-32-chars-minimum-production-only
+      JWT_ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: 15
+      REFRESH_TOKEN_EXPIRE_DAYS: 7
+      
+      # Encryption
+      ENCRYPTION_KEY: your-encryption-key-must-be-32-chars-0000000000000000
+      
+      # Entra ID (can be configured per-org via API after startup)
+      ENTRA_ID_AUTHORITY: https://login.microsoftonline.com
+      ENTRA_ID_SCOPE: https://graph.microsoft.com/.default
+      ENTRA_ID_RESPONSE_TYPE: code
+      ENTRA_ID_RESPONSE_MODE: query
+      OAUTH_STATE_EXPIRY: 600
+      
+    depends_on:
+      postgres-auth:
+        condition: service_healthy
+      redis-auth:
+        condition: service_healthy
+    networks:
+      - authyantra-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ============================================================================
+  # PROJECT 1 SERVICES (8100-8199)
+  # ============================================================================
+
+  # PostgreSQL for Project 1
+  postgres-project1:
+    image: postgres:15-alpine
+    container_name: authyantra-postgres-project1
+    environment:
+      POSTGRES_DB: project1_db
+      POSTGRES_USER: project1_user
+      POSTGRES_PASSWORD: project1_password
+    volumes:
+      - postgres_project1_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    networks:
+      - authyantra-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U project1_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache for Project 1
+  redis-project1:
+    image: redis:7-alpine
+    container_name: authyantra-redis-project1
+    ports:
+      - "8104:6379"
+    networks:
+      - authyantra-network
+
+  # Project 1 Backend API
+  project1-backend:
+    image: python:3.12-slim
+    container_name: authyantra-project1-backend
+    ports:
+      - "8100:8000"
+    environment:
+      ENV: development
+      DEBUG: "True"
+      PORT: 8000
+      
+      # Database
+      POSTGRES_HOST: postgres-project1
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: project1_user
+      POSTGRES_PASSWORD: project1_password
+      POSTGRES_DB: project1_db
+      
+      # Auth Service Communication
+      AUTH_SERVICE_URL: http://auth-service:8000
+      
+      # JWT (MUST match Auth Service)
+      JWT_SECRET_KEY: your-very-long-secret-key-32-chars-minimum-production-only
+      JWT_ALGORITHM: HS256
+      
+    depends_on:
+      postgres-project1:
+        condition: service_healthy
+      redis-project1:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+    networks:
+      - authyantra-network
+    entrypoint: >
+      bash -c "pip install fastapi uvicorn sqlalchemy asyncpg python-jose cryptography &&
+               python -m uvicorn --host 0.0.0.0 --port 8000 main:app --reload"
+    working_dir: /app
+    volumes:
+      - ./projects/project1/backend:/app
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Project 1 Worker Service (Background Jobs)
+  project1-worker:
+    image: python:3.12-slim
+    container_name: authyantra-project1-worker
+    ports:
+      - "8102:8000"
+    environment:
+      ENV: development
+      DEBUG: "True"
+      
+      # Database
+      POSTGRES_HOST: postgres-project1
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: project1_user
+      POSTGRES_PASSWORD: project1_password
+      POSTGRES_DB: project1_db
+      
+      # Auth Service
+      AUTH_SERVICE_URL: http://auth-service:8000
+      JWT_SECRET_KEY: your-very-long-secret-key-32-chars-minimum-production-only
+      
+    depends_on:
+      - postgres-project1
+      - auth-service
+    networks:
+      - authyantra-network
+    entrypoint: >
+      bash -c "pip install celery redis &&
+               celery -A tasks worker --loglevel=info"
+    working_dir: /app
+    volumes:
+      - ./projects/project1/backend:/app
+
+  # ============================================================================
+  # PROJECT 2 SERVICES (8200-8299)
+  # ============================================================================
+
+  # PostgreSQL for Project 2
+  postgres-project2:
+    image: postgres:15-alpine
+    container_name: authyantra-postgres-project2
+    environment:
+      POSTGRES_DB: project2_db
+      POSTGRES_USER: project2_user
+      POSTGRES_PASSWORD: project2_password
+    volumes:
+      - postgres_project2_data:/var/lib/postgresql/data
+    ports:
+      - "5434:5432"
+    networks:
+      - authyantra-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U project2_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Project 2 Backend API
+  project2-backend:
+    image: python:3.12-slim
+    container_name: authyantra-project2-backend
+    ports:
+      - "8200:8000"
+    environment:
+      ENV: development
+      DEBUG: "True"
+      PORT: 8000
+      
+      # Database
+      POSTGRES_HOST: postgres-project2
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: project2_user
+      POSTGRES_PASSWORD: project2_password
+      POSTGRES_DB: project2_db
+      
+      # Auth Service Communication
+      AUTH_SERVICE_URL: http://auth-service:8000
+      
+      # JWT (MUST match Auth Service)
+      JWT_SECRET_KEY: your-very-long-secret-key-32-chars-minimum-production-only
+      JWT_ALGORITHM: HS256
+      
+    depends_on:
+      postgres-project2:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+    networks:
+      - authyantra-network
+    entrypoint: >
+      bash -c "pip install fastapi uvicorn sqlalchemy asyncpg python-jose cryptography &&
+               python -m uvicorn --host 0.0.0.0 --port 8000 main:app --reload"
+    working_dir: /app
+    volumes:
+      - ./projects/project2/backend:/app
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ============================================================================
+  # INFRASTRUCTURE SERVICES (9000-9499)
+  # ============================================================================
+
+  # Prometheus for Metrics
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: authyantra-prometheus
+    ports:
+      - "9000:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    networks:
+      - authyantra-network
+
+  # Grafana for Dashboard Visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: authyantra-grafana
+    ports:
+      - "9001:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_SECURITY_ADMIN_USER: admin
+      GF_INSTALL_PLUGINS: grafana-piechart-panel
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - authyantra-network
+
+  # Nginx - API Gateway & Load Balancer
+  nginx:
+    image: nginx:alpine
+    container_name: authyantra-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./monitoring/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+    depends_on:
+      - auth-service
+      - project1-backend
+      - project2-backend
+    networks:
+      - authyantra-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+# ============================================================================
+# NETWORKS & VOLUMES
+# ============================================================================
+
+networks:
+  authyantra-network:
+    driver: bridge
+
+volumes:
+  postgres_auth_data:
+    driver: local
+  postgres_project1_data:
+    driver: local
+  postgres_project2_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local

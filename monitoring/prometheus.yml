@@ -1,0 +1,54 @@
+# Prometheus Configuration
+# Scrapes metrics from all services
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'authyantra-monitor'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+# Load rules once and periodically evaluate them
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+
+# Scrape configurations
+scrape_configs:
+  # Auth Service
+  - job_name: 'auth-service'
+    static_configs:
+      - targets: ['auth-service:8000']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # Project 1 Backend
+  - job_name: 'project1-api'
+    static_configs:
+      - targets: ['project1-backend:8000']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # Project 1 Worker
+  - job_name: 'project1-worker'
+    static_configs:
+      - targets: ['project1-worker:8000']
+    metrics_path: '/metrics'
+    scrape_interval: 15s
+
+  # Project 2 Backend
+  - job_name: 'project2-api'
+    static_configs:
+      - targets: ['project2-backend:8000']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
