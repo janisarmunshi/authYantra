@@ -108,7 +108,7 @@ async def get_organization(
     is_authorized, error = await AuthService.verify_org_ownership_or_admin(
         db, user_id, user_org_id, org_id
     )
-    # check if authorized
+    # check if authorized.
     if not is_authorized:
         raise HTTPException(status_code=403, detail=error or "Access denied")
 
