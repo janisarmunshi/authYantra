@@ -6,13 +6,29 @@ set -e
 REPO_URL="${1:-https://github.com/YOUR_USERNAME/authYantra.git}"
 DEPLOY_DIR="/opt/authyantra"
 
-echo "=== Installing Docker ==="
+echo "=== Installing dependencies ==="
 apt-get update -q
 apt-get install -y curl git nginx certbot python3-certbot-nginx
 
-curl -fsSL https://get.docker.com | sh
+echo "=== Installing Docker ==="
+if command -v docker &>/dev/null; then
+  echo "Docker already installed: $(docker --version)"
+else
+  apt-get install -y docker.io
+fi
 systemctl enable docker
 systemctl start docker
+
+echo "=== Installing Docker Compose v2 ==="
+if docker compose version &>/dev/null; then
+  echo "Docker Compose already installed: $(docker compose version)"
+else
+  mkdir -p /usr/local/lib/docker/cli-plugins
+  curl -SL https://github.com/docker/compose/releases/download/v2.27.0/docker-compose-linux-x86_64 \
+       -o /usr/local/lib/docker/cli-plugins/docker-compose
+  chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+  echo "Installed: $(docker compose version)"
+fi
 
 echo "=== Cloning repository ==="
 if [ -d "$DEPLOY_DIR" ]; then
