@@ -8,7 +8,6 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   build-and-deploy:
@@ -21,9 +20,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── Determine environment ──────────────────────────────────────────────
+      # ── Determine environment & lowercase image name ───────────────────────
       - name: Set environment variables
         run: |
+          IMAGE_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          echo "IMAGE_NAME_LOWER=$IMAGE_LOWER" >> $GITHUB_ENV
+
           if [ "${{ github.ref_name }}" = "main" ]; then
             echo "ENVIRONMENT=prod" >> $GITHUB_ENV
             echo "IMAGE_TAG=prod-latest" >> $GITHUB_ENV
@@ -54,8 +56,8 @@ jobs:
           file: ./Dockerfile
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}-${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LOWER }}:${{ env.IMAGE_TAG }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LOWER }}:${{ env.IMAGE_TAG }}-${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -70,14 +72,12 @@ jobs:
           script: |
             set -e
 
-            # Pull latest compose files from repo
             cd /opt/authyantra
             git pull origin ${{ github.ref_name }}
 
-            # Write environment file for this deployment
             if [ "$ENVIRONMENT" = "prod" ]; then
               cat > .env.prod <<EOF
-            GITHUB_REPOSITORY=${{ github.repository }}
+            GITHUB_REPOSITORY=${{ env.IMAGE_NAME_LOWER }}
             POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
             JWT_SECRET_KEY=${{ secrets.JWT_SECRET_KEY }}
             ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }}
@@ -93,7 +93,7 @@ jobs:
               docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --remove-orphans
             else
               cat > .env.beta <<EOF
-            GITHUB_REPOSITORY=${{ github.repository }}
+            GITHUB_REPOSITORY=${{ env.IMAGE_NAME_LOWER }}
             BETA_POSTGRES_PASSWORD=${{ secrets.BETA_POSTGRES_PASSWORD }}
             BETA_JWT_SECRET_KEY=${{ secrets.BETA_JWT_SECRET_KEY }}
             BETA_ENCRYPTION_KEY=${{ secrets.BETA_ENCRYPTION_KEY }}
@@ -109,7 +109,5 @@ jobs:
               docker compose -f docker-compose.beta.yml --env-file .env.beta up -d --remove-orphans
             fi
 
-            # Clean up dangling images
             docker image prune -f
-
-            echo "✓ Deployed $ENVIRONMENT to $DOMAIN"
+            echo "Deployed $ENVIRONMENT to $DOMAIN"
