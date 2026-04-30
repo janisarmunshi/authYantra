@@ -5,7 +5,11 @@
       "Bash(npm create:*)",
       "Bash(npm install:*)",
       "Bash(npm run:*)",
-      "Bash(alembic upgrade:*)"
+      "Bash(alembic upgrade:*)",
+      "Bash(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 root@103.212.121.121 \"ls /etc/apache2/sites-enabled/ && echo '---' && apache2ctl -S 2>&1 | head -40 && echo '---' && ss -tlnp | grep -E ':\\(80|443|8080|3000|8000\\)'\")",
+      "Read(//c/Users/janis/.ssh/**)",
+      "Bash(ssh -i /tmp/vps_key -o StrictHostKeyChecking=no root@103.212.121.121 ' *)",
+      "Bash(ssh -i /tmp/vps_key -o StrictHostKeyChecking=no root@103.212.121.121 \"journalctl -u gunicorn-yantra -n 30 --no-pager 2>&1\")"
     ]
   }
 }

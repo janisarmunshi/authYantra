@@ -2,7 +2,7 @@
 # One-time VPS setup for authYantra
 # Usage: bash vps-setup.sh [repo_url] [branch]
 # Example: bash vps-setup.sh https://github.com/janisarmunshi/authYantra.git dev
-set -euo pipefail
+set -euo pipefail 
 
 REPO_URL="${1:-https://github.com/janisarmunshi/authYantra.git}"
 BRANCH="${2:-main}"
