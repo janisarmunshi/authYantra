@@ -1,6 +1,5 @@
 from logging.config import fileConfig
-from sqlalchemy import engine_from_config
-from sqlalchemy import pool
+from sqlalchemy import create_engine, pool
 from alembic import context
 import os
 import sys
@@ -20,29 +19,25 @@ if config.config_file_name is not None:
 
 settings = get_settings()
 
-# Fix: Convert async URL to sync URL for Alembic migrations
-# Alembic runs migrations synchronously, so we need psycopg (sync)
-# instead of asyncpg (async)
-database_url = settings.DATABASE_URL
-if "postgresql+asyncpg://" in database_url:
-    # Convert asyncpg to psycopg (version 3) for migrations
-    database_url = database_url.replace("postgresql+asyncpg://", "postgresql+psycopg://")
-elif "postgresql://" not in database_url:
-    # If it's just "postgresql://" add the driver
-    if database_url.startswith("postgresql://"):
-        database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
-
-# Set sqlalchemy config
-config.set_main_option("sqlalchemy.url", database_url)
+# Build a synchronous psycopg URL for Alembic (asyncpg is async-only)
+# Use URL.create so special characters in the password are handled safely
+from sqlalchemy.engine import URL as SAURL
+sync_url = SAURL.create(
+    drivername="postgresql+psycopg",
+    username=settings.POSTGRES_USER,
+    password=settings.POSTGRES_PASSWORD,
+    host=settings.POSTGRES_HOST,
+    port=settings.POSTGRES_PORT,
+    database=settings.POSTGRES_DB,
+)
 
 target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode."""
-    url = config.get_main_option("sqlalchemy.url")
     context.configure(
-        url=url,
+        url=sync_url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
@@ -54,11 +49,7 @@ def run_migrations_offline() -> None:
 
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
-    connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
+    connectable = create_engine(sync_url, poolclass=pool.NullPool)
 
     with connectable.connect() as connection:
         context.configure(connection=connection, target_metadata=target_metadata)
