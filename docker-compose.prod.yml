@@ -1,0 +1,72 @@
+services:
+  postgres-prod:
+    image: postgres:15-alpine
+    container_name: authyantra-prod-postgres
+    environment:
+      POSTGRES_DB: authyantra_prod
+      POSTGRES_USER: authyantra
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_prod_data:/var/lib/postgresql/data
+    networks:
+      - prod-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authyantra"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  auth-service-prod:
+    image: ghcr.io/${GITHUB_REPOSITORY}:prod-latest
+    container_name: authyantra-prod-api
+    ports:
+      - "8000:8000"
+    environment:
+      ENV: production
+      DEBUG: "False"
+      POSTGRES_HOST: postgres-prod
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: authyantra
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: authyantra_prod
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      JWT_ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: 15
+      REFRESH_TOKEN_EXPIRE_DAYS: 7
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      ENTRA_ID_AUTHORITY: https://login.microsoftonline.com
+      ENTRA_ID_SCOPE: https://graph.microsoft.com/.default
+      ENTRA_ID_RESPONSE_TYPE: code
+      ENTRA_ID_RESPONSE_MODE: query
+      OAUTH_STATE_EXPIRY: 600
+      SMTP_HOST: ${SMTP_HOST:-mail.marketyantra.com}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_USE_SSL: ${SMTP_USE_SSL:-true}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-false}
+      SMTP_USERNAME: ${SMTP_USERNAME}
+      SMTP_PASSWORD: ${SMTP_PASSWORD}
+      EMAIL_FROM: ${EMAIL_FROM}
+      EMAIL_FROM_NAME: authYantra
+      FRONTEND_URL: https://auth.marketyantra.com
+      CORS_ORIGINS: '["https://auth.marketyantra.com"]'
+    depends_on:
+      postgres-prod:
+        condition: service_healthy
+    networks:
+      - prod-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  prod-net:
+    driver: bridge
+
+volumes:
+  postgres_prod_data:
+    driver: local
