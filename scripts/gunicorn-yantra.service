@@ -1,0 +1,21 @@
+[Unit]
+Description=Gunicorn daemon for backend.marketyantra.com
+After=network.target
+
+[Service]
+User=worker
+Group=worker
+WorkingDirectory=/home/worker/MarketYantra/Yantra/yantra
+RuntimeDirectory=gunicorn-yantra
+ExecStart=/home/worker/MarketYantra/Yantra/envYantra/bin/gunicorn \
+    --workers 3 \
+    --bind unix:/run/gunicorn-yantra/yantra.sock \
+    --access-logfile /home/worker/MarketYantra/Yantra/yantra/logs/gunicorn-access.log \
+    --error-logfile /home/worker/MarketYantra/Yantra/yantra/logs/gunicorn-error.log \
+    yantra.wsgi:application
+ExecReload=/bin/kill -s HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
