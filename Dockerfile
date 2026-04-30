@@ -4,7 +4,7 @@ WORKDIR /ui
 COPY ui/package*.json ./
 RUN npm ci
 COPY ui/ ./
-RUN npx vite build
+RUN npx vite build --outDir /ui/dist --emptyOutDir
 
 # ── Stage 2: Python backend with embedded UI ──────────────────────────────────
 FROM python:3.11-slim
