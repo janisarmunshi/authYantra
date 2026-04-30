@@ -1,6 +1,7 @@
 import os
 from functools import lru_cache
 from datetime import timedelta
+from urllib.parse import quote_plus
 from pydantic_settings import BaseSettings
 
 
@@ -22,7 +23,7 @@ class Settings(BaseSettings):
 
     @property
     def DATABASE_URL(self) -> str:
-        return f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+        return f"postgresql+asyncpg://{self.POSTGRES_USER}:{quote_plus(self.POSTGRES_PASSWORD)}@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
 
     # JWT settings
     JWT_SECRET_KEY: str = os.getenv("JWT_SECRET_KEY", "change-me-in-production-with-secure-key-32-chars-min")
