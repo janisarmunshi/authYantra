@@ -128,27 +128,20 @@ class AuthService:
         user_id: str,
         org_id: UUID,
     ) -> bool:
-        """Check if user is admin for a specific organization"""
+        """Check if user is admin for a specific organization.
+        Uses user_organizations.role — the membership-level admin flag."""
         try:
+            from models import UserOrganization
             user_uuid = UUID(user_id) if isinstance(user_id, str) else user_id
 
             result = await db.execute(
-                select(User).options(selectinload(User.roles)).where(User.id == user_uuid)
-            )
-            user = result.scalar_one_or_none()
-
-            if not user:
-                return False
-
-            admin_result = await db.execute(
-                select(Role).where(
-                    Role.organization_id == org_id,
-                    Role.name == "admin"
+                select(UserOrganization).where(
+                    UserOrganization.user_id == user_uuid,
+                    UserOrganization.org_id == org_id,
+                    UserOrganization.role == "admin",
                 )
             )
-            admin_role = admin_result.scalar_one_or_none()
-
-            return bool(admin_role and admin_role in user.roles)
+            return result.scalar_one_or_none() is not None
 
         except Exception:
             return False
