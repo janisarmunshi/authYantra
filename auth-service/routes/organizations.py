@@ -2,6 +2,7 @@
 
 import hashlib
 import secrets
+import uuid as _uuid
 from fastapi import APIRouter, HTTPException, Depends, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -69,18 +70,21 @@ async def create_organization(
     if not user_info:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    org = Organization(name=data.name)
-    db.add(org)
     try:
-        await db.flush()
-
         user_id = UUID(user_info["user_id"])
+
+        # Check membership count BEFORE opening the write transaction
         existing_memberships = await UserService.get_user_memberships(db, user_id)
         is_first = len(existing_memberships) == 0
 
+        # Pre-generate UUID so we don't need db.flush() to get the org id
+        org_id = _uuid.uuid4()
+        org = Organization(id=org_id, name=data.name)
+        db.add(org)
+
         membership = UserOrganization(
             user_id=user_id,
-            org_id=org.id,
+            org_id=org_id,
             role="admin",
             is_default=is_first,
         )
@@ -90,7 +94,7 @@ async def create_organization(
             user_result = await db.execute(select(User).where(User.id == user_id))
             user = user_result.scalar_one_or_none()
             if user:
-                user.organization_id = org.id
+                user.organization_id = org_id
 
         await db.commit()
         await db.refresh(org)
