@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
 import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { Plus, Building2, Loader2, AlertCircle, ChevronRight, Star } from 'lucide-react'
+import { Plus, Building2, Loader2, AlertCircle, ChevronRight, Star, Trash2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { organizationsApi } from '@/api/organizations'
 import { authApi } from '@/api/auth'
@@ -85,8 +85,9 @@ function CreateOrgModal({ onClose }: { onClose: () => void }) {
 
 function OrgCard({ org, isCurrent }: { org: OrgSummary; isCurrent: boolean }) {
   const navigate = useNavigate()
-  const { completeOrgSelection } = useAuth()
+  const { completeOrgSelection, logout } = useAuth()
   const queryClient = useQueryClient()
+  const [confirmDelete, setConfirmDelete] = useState(false)
 
   const switchMutation = useMutation({
     mutationFn: () => authApi.switchOrg(org.id),
@@ -97,16 +98,36 @@ function OrgCard({ org, isCurrent }: { org: OrgSummary; isCurrent: boolean }) {
     },
   })
 
+  const deleteMutation = useMutation({
+    mutationFn: () => organizationsApi.deleteOrg(org.id),
+    onSuccess: async () => {
+      queryClient.invalidateQueries({ queryKey: ['my-orgs'] })
+      if (isCurrent) {
+        // Get remaining orgs and switch to first, or logout
+        const remaining = await authApi.myOrgs().catch(() => [])
+        const next = remaining.find((o: OrgSummary) => o.id !== org.id)
+        if (next) {
+          const tokens = await authApi.switchOrg(next.id)
+          completeOrgSelection(tokens.access_token, tokens.refresh_token)
+        } else {
+          logout()
+          navigate('/login')
+        }
+      }
+      setConfirmDelete(false)
+    },
+  })
+
   return (
-    <div
-      className={`bg-white rounded-xl border p-5 cursor-pointer transition-all group ${
-        isCurrent ? 'border-indigo-300 shadow-sm' : 'border-slate-200 hover:border-indigo-300 hover:shadow-sm'
-      }`}
-      onClick={() => isCurrent ? navigate(`/organizations/${org.id}`) : switchMutation.mutate()}
-    >
+    <div className={`bg-white rounded-xl border p-5 transition-all ${
+      isCurrent ? 'border-indigo-300 shadow-sm' : 'border-slate-200'
+    }`}>
       <div className="flex items-start justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-lg bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold text-sm uppercase">
+        <div
+          className="flex items-center gap-3 flex-1 cursor-pointer group"
+          onClick={() => isCurrent ? navigate(`/organizations/${org.id}`) : switchMutation.mutate()}
+        >
+          <div className="w-10 h-10 rounded-lg bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold text-sm uppercase shrink-0">
             {org.name[0]}
           </div>
           <div>
@@ -119,11 +140,40 @@ function OrgCard({ org, isCurrent }: { org: OrgSummary; isCurrent: boolean }) {
             </div>
             <p className="text-xs text-slate-400 capitalize mt-0.5">{org.role}</p>
           </div>
+          {switchMutation.isPending
+            ? <Loader2 className="h-4 w-4 animate-spin text-indigo-500 ml-2" />
+            : <ChevronRight className="h-4 w-4 text-slate-300 group-hover:text-indigo-500 transition-colors ml-2" />
+          }
         </div>
-        {switchMutation.isPending
-          ? <Loader2 className="h-4 w-4 animate-spin text-indigo-500" />
-          : <ChevronRight className="h-4 w-4 text-slate-400 group-hover:text-indigo-500 transition-colors" />
-        }
+
+        {org.role === 'admin' && (
+          <div className="ml-3 flex items-center gap-1 shrink-0">
+            {!confirmDelete ? (
+              <button
+                onClick={() => setConfirmDelete(true)}
+                className="p-1.5 rounded-lg hover:bg-rose-50 text-slate-400 hover:text-rose-500 transition-colors"
+                title="Delete organization"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            ) : (
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => deleteMutation.mutate()}
+                  disabled={deleteMutation.isPending}
+                  className="text-xs px-2 py-1 bg-rose-600 text-white rounded hover:bg-rose-700 disabled:opacity-60 flex items-center gap-1"
+                >
+                  {deleteMutation.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
+                  Delete
+                </button>
+                <button onClick={() => setConfirmDelete(false)}
+                  className="text-xs px-2 py-1 border border-slate-300 rounded hover:bg-slate-50">
+                  Cancel
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )

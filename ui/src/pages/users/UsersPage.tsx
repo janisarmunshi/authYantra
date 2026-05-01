@@ -359,6 +359,15 @@ export function UsersPage() {
     enabled: !!orgId,
   })
 
+  if (!orgId) {
+    return (
+      <div className="p-6 max-w-5xl mx-auto text-center py-20">
+        <Users className="h-10 w-10 text-slate-300 mx-auto mb-3" />
+        <p className="text-slate-500">Select an organization to manage users.</p>
+      </div>
+    )
+  }
+
   return (
     <div className="p-6 max-w-5xl mx-auto">
       <PageHeader

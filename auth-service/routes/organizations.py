@@ -405,6 +405,85 @@ async def create_app(
         raise HTTPException(status_code=400, detail=f"Error creating app: {str(e)}")
 
 
+@router.get("/orgs/{org_id}/apps")
+async def list_apps(
+    org_id: UUID,
+    authorization: str = Header(...),
+    db: AsyncSession = Depends(get_db_session),
+):
+    user_info = AuthService.verify_and_get_user(authorization)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Invalid or missing authorization")
+
+    is_authorized, error = await AuthService.verify_org_ownership_or_admin(
+        db, user_info["user_id"], user_info.get("org_id"), org_id
+    )
+    if not is_authorized:
+        raise HTTPException(status_code=403, detail=error or "Access denied")
+
+    result = await db.execute(
+        select(RegisteredApp).where(RegisteredApp.organization_id == org_id).order_by(RegisteredApp.created_at)
+    )
+    return [_app_dict(a) for a in result.scalars().all()]
+
+
+@router.delete("/orgs/{org_id}/apps/{app_id}")
+async def delete_app(
+    org_id: UUID,
+    app_id: UUID,
+    authorization: str = Header(...),
+    db: AsyncSession = Depends(get_db_session),
+):
+    user_info = AuthService.verify_and_get_user(authorization)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    is_super = await AuthService.is_super_user(db, user_info["user_id"], user_info.get("org_id"))
+    is_admin = await AuthService.is_org_admin(db, user_info["user_id"], org_id)
+    if not is_super and not is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    result = await db.execute(
+        select(RegisteredApp).where(RegisteredApp.id == app_id, RegisteredApp.organization_id == org_id)
+    )
+    app = result.scalar_one_or_none()
+    if not app:
+        raise HTTPException(status_code=404, detail="App not found")
+    await db.delete(app)
+    await db.commit()
+    return {"message": "App deleted"}
+
+
+@router.delete("/orgs/{org_id}")
+async def delete_organization(
+    org_id: UUID,
+    authorization: str = Header(...),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Delete an organization and all its related data. Admin only."""
+    user_info = AuthService.verify_and_get_user(authorization)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    is_super = await AuthService.is_super_user(db, user_info["user_id"], user_info.get("org_id"))
+    is_admin = await AuthService.is_org_admin(db, user_info["user_id"], org_id)
+    if not is_super and not is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    result = await db.execute(select(Organization).where(Organization.id == org_id))
+    org = result.scalar_one_or_none()
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    try:
+        await db.delete(org)
+        await db.commit()
+        return {"message": "Organization deleted"}
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=f"Error deleting organization: {str(e)}")
+
+
 @router.get("/orgs/{org_id}/apps/{app_id}")
 async def get_app(
     org_id: UUID,

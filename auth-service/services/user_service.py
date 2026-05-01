@@ -184,10 +184,12 @@ class UserService:
 
     @staticmethod
     async def remove_user_from_org(
-        db: AsyncSession, user_id: UUID, org_id: UUID
+        db: AsyncSession, user_id: UUID, org_id: UUID, delete_user: bool = False
     ) -> Tuple[bool, Optional[str]]:
-        """Remove a user from an org. Clears default if needed."""
+        """Remove a user from an org. If delete_user=True, deletes the user record entirely.
+        If the org has no members left after removal, the org is also deleted."""
         try:
+            from models import Organization
             membership_result = await db.execute(
                 select(UserOrganization).where(
                     UserOrganization.user_id == user_id,
@@ -200,9 +202,14 @@ class UserService:
 
             was_default = membership.is_default
             await db.delete(membership)
+            await db.flush()
 
-            if was_default:
-                # Pick next membership as default, or null out user.organization_id
+            if delete_user:
+                user_result = await db.execute(select(User).where(User.id == user_id))
+                user = user_result.scalar_one_or_none()
+                if user:
+                    await db.delete(user)
+            elif was_default:
                 next_result = await db.execute(
                     select(UserOrganization).where(UserOrganization.user_id == user_id)
                 )
@@ -215,6 +222,16 @@ class UserService:
                         user.organization_id = next_membership.org_id
                     else:
                         user.organization_id = None
+
+            # If org is now empty, delete it too
+            remaining = await db.execute(
+                select(UserOrganization).where(UserOrganization.org_id == org_id)
+            )
+            if not remaining.scalars().first():
+                org_result = await db.execute(select(Organization).where(Organization.id == org_id))
+                org = org_result.scalar_one_or_none()
+                if org:
+                    await db.delete(org)
 
             await db.commit()
             return True, None

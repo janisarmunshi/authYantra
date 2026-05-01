@@ -694,12 +694,11 @@ async def delete_user(
     if str(user_id) == requester_id:
         raise HTTPException(status_code=400, detail="You cannot delete your own account")
 
-    from models import UserOrganization
     from services.user_service import UserService
-    success, error = await UserService.remove_user_from_org(db, user_id, org_id)
+    success, error = await UserService.remove_user_from_org(db, user_id, org_id, delete_user=True)
     if not success:
         raise HTTPException(status_code=404, detail=error or "User not found in this organization")
-    return {"message": "User removed from organization"}
+    return {"message": "User deleted"}
 
 
 @router.get("/users/{user_id}/roles/{org_id}")

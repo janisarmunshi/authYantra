@@ -1,9 +1,9 @@
 import { useState } from 'react'
-import { useMutation } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
 import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { Plus, AppWindow, Loader2, AlertCircle, Copy, Check, Eye, EyeOff } from 'lucide-react'
+import { Plus, AppWindow, Loader2, AlertCircle, Copy, Check, Eye, EyeOff, Trash2 } from 'lucide-react'
 import { organizationsApi } from '@/api/organizations'
 import { useAuth } from '@/context/AuthContext'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -41,7 +41,15 @@ function ApiKeyDisplay({ apiKey }: { apiKey: string }) {
   )
 }
 
-function AppCard({ app }: { app: RegisteredApp }) {
+function AppCard({ app, orgId }: { app: RegisteredApp; orgId: string }) {
+  const queryClient = useQueryClient()
+  const [confirmDelete, setConfirmDelete] = useState(false)
+
+  const deleteMutation = useMutation({
+    mutationFn: () => organizationsApi.deleteApp(orgId, app.id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['apps', orgId] }),
+  })
+
   const typeColors: Record<string, string> = {
     web: 'bg-indigo-100 text-indigo-700',
     desktop: 'bg-amber-100 text-amber-700',
@@ -62,13 +70,31 @@ function AppCard({ app }: { app: RegisteredApp }) {
             </span>
           </div>
         </div>
-        <span
-          className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+        <div className="flex items-center gap-2">
+          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
             app.is_active ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'
-          }`}
-        >
-          {app.is_active ? 'Active' : 'Inactive'}
-        </span>
+          }`}>
+            {app.is_active ? 'Active' : 'Inactive'}
+          </span>
+          {!confirmDelete ? (
+            <button onClick={() => setConfirmDelete(true)}
+              className="p-1 rounded hover:bg-rose-50 text-slate-400 hover:text-rose-500 transition-colors">
+              <Trash2 className="h-4 w-4" />
+            </button>
+          ) : (
+            <div className="flex items-center gap-1">
+              <button onClick={() => deleteMutation.mutate()} disabled={deleteMutation.isPending}
+                className="text-xs px-2 py-1 bg-rose-600 text-white rounded hover:bg-rose-700 disabled:opacity-60 flex items-center gap-1">
+                {deleteMutation.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
+                Delete
+              </button>
+              <button onClick={() => setConfirmDelete(false)}
+                className="text-xs px-2 py-1 border border-slate-300 rounded hover:bg-slate-50">
+                Cancel
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="space-y-2">
@@ -98,11 +124,8 @@ function AppCard({ app }: { app: RegisteredApp }) {
   )
 }
 
-function CreateAppModal({ orgId, onClose, onCreated }: {
-  orgId: string
-  onClose: () => void
-  onCreated: (app: RegisteredApp) => void
-}) {
+function CreateAppModal({ orgId, onClose }: { orgId: string; onClose: () => void }) {
+  const queryClient = useQueryClient()
   const [error, setError] = useState<string | null>(null)
 
   const { register, handleSubmit, formState: { errors } } = useForm<AppForm>({
@@ -117,8 +140,8 @@ function CreateAppModal({ orgId, onClose, onCreated }: {
         app_type: data.app_type,
         redirect_uris: data.redirect_uris.split('\n').map((s) => s.trim()).filter(Boolean),
       }),
-    onSuccess: (app) => {
-      onCreated(app)
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['apps', orgId] })
       onClose()
     },
     onError: (err: unknown) => {
@@ -134,28 +157,22 @@ function CreateAppModal({ orgId, onClose, onCreated }: {
 
         {error && (
           <div className="flex items-start gap-2 p-3 mb-4 bg-rose-50 border border-rose-200 rounded-lg text-rose-700 text-sm">
-            <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
-            {error}
+            <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />{error}
           </div>
         )}
 
         <form onSubmit={handleSubmit((d) => mutation.mutate(d))} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1.5">App Name</label>
-            <input
-              {...register('app_name')}
-              placeholder="My Application"
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            />
+            <input {...register('app_name')} placeholder="My Application"
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
             {errors.app_name && <p className="text-rose-500 text-xs mt-1">{errors.app_name.message}</p>}
           </div>
 
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1.5">App Type</label>
-            <select
-              {...register('app_type')}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            >
+            <select {...register('app_type')}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
               <option value="web">Web Application</option>
               <option value="desktop">Desktop Application</option>
               <option value="mobile">Mobile Application</option>
@@ -166,24 +183,19 @@ function CreateAppModal({ orgId, onClose, onCreated }: {
             <label className="block text-sm font-medium text-slate-700 mb-1.5">
               Redirect URIs <span className="text-slate-400 font-normal">(one per line)</span>
             </label>
-            <textarea
-              {...register('redirect_uris')}
-              rows={3}
+            <textarea {...register('redirect_uris')} rows={3}
               placeholder="https://yourapp.com/auth/callback"
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
-            />
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none" />
             {errors.redirect_uris && <p className="text-rose-500 text-xs mt-1">{errors.redirect_uris.message}</p>}
           </div>
 
           <div className="flex gap-3 pt-1">
-            <button type="button" onClick={onClose} className="flex-1 py-2 px-4 border border-slate-300 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-50">
+            <button type="button" onClick={onClose}
+              className="flex-1 py-2 px-4 border border-slate-300 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-50">
               Cancel
             </button>
-            <button
-              type="submit"
-              disabled={mutation.isPending}
-              className="flex-1 flex items-center justify-center gap-2 py-2 px-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium disabled:opacity-60"
-            >
+            <button type="submit" disabled={mutation.isPending}
+              className="flex-1 flex items-center justify-center gap-2 py-2 px-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium disabled:opacity-60">
               {mutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
               Register App
             </button>
@@ -197,8 +209,22 @@ function CreateAppModal({ orgId, onClose, onCreated }: {
 export function AppsPage() {
   const { user } = useAuth()
   const orgId = user?.org_id ?? ''
-  const [apps, setApps] = useState<RegisteredApp[]>([])
   const [showCreate, setShowCreate] = useState(false)
+
+  const { data: apps = [], isLoading } = useQuery({
+    queryKey: ['apps', orgId],
+    queryFn: () => organizationsApi.listApps(orgId),
+    enabled: !!orgId,
+  })
+
+  if (!orgId) {
+    return (
+      <div className="p-6 max-w-4xl mx-auto text-center py-20">
+        <AppWindow className="h-10 w-10 text-slate-300 mx-auto mb-3" />
+        <p className="text-slate-500">Select an organization to manage applications.</p>
+      </div>
+    )
+  }
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
@@ -206,28 +232,25 @@ export function AppsPage() {
         title="Applications"
         description="Registered client applications for your organization"
         action={
-          <button
-            onClick={() => setShowCreate(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium transition-colors"
-          >
-            <Plus className="h-4 w-4" />
-            Register App
+          <button onClick={() => setShowCreate(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium transition-colors">
+            <Plus className="h-4 w-4" />Register App
           </button>
         }
       />
 
       <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
-        <p className="font-medium mb-0.5">API Keys are shown once</p>
-        <p className="text-amber-700">
-          After registering an app, copy the API key immediately. It won't be shown in plain text again.
-        </p>
+        <p className="font-medium mb-0.5">API Keys are sensitive</p>
+        <p className="text-amber-700">Keep your API keys secure. Use the eye icon to reveal a key.</p>
       </div>
 
-      {apps.length > 0 ? (
+      {isLoading ? (
+        <div className="flex items-center gap-2 text-slate-500 text-sm py-8">
+          <Loader2 className="h-4 w-4 animate-spin" />Loading…
+        </div>
+      ) : apps.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {apps.map((app) => (
-            <AppCard key={app.id} app={app} />
-          ))}
+          {apps.map((app) => <AppCard key={app.id} app={app} orgId={orgId} />)}
         </div>
       ) : (
         <div className="text-center py-16 bg-white rounded-xl border border-slate-200">
@@ -237,13 +260,7 @@ export function AppsPage() {
         </div>
       )}
 
-      {showCreate && (
-        <CreateAppModal
-          orgId={orgId}
-          onClose={() => setShowCreate(false)}
-          onCreated={(app) => setApps((prev) => [app, ...prev])}
-        />
-      )}
+      {showCreate && <CreateAppModal orgId={orgId} onClose={() => setShowCreate(false)} />}
     </div>
   )
 }

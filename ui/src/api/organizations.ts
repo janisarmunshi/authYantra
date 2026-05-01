@@ -31,9 +31,18 @@ export const organizationsApi = {
   listInvites: (orgId: string) =>
     apiClient.get<OrgInvite[]>(`/orgs/${orgId}/invites`).then((r) => r.data),
 
+  deleteOrg: (orgId: string) =>
+    apiClient.delete(`/orgs/${orgId}`).then((r) => r.data),
+
   // Apps
+  listApps: (orgId: string) =>
+    apiClient.get<RegisteredApp[]>(`/orgs/${orgId}/apps`).then((r) => r.data),
+
   createApp: (orgId: string, data: CreateAppRequest) =>
     apiClient.post<RegisteredApp>(`/orgs/${orgId}/apps`, data).then((r) => r.data),
+
+  deleteApp: (orgId: string, appId: string) =>
+    apiClient.delete(`/orgs/${orgId}/apps/${appId}`).then((r) => r.data),
 
   getApp: (orgId: string, appId: string) =>
     apiClient.get<RegisteredApp>(`/orgs/${orgId}/apps/${appId}`).then((r) => r.data),
