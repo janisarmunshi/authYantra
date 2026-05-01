@@ -208,10 +208,19 @@ function RoleCard({ role, orgId, endpoints }: { role: Role; orgId: string; endpo
   const queryClient = useQueryClient()
   const [expanded, setExpanded] = useState(false)
   const [editing, setEditing] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   const deleteMutation = useMutation({
     mutationFn: () => rolesApi.delete(orgId, role.id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['roles', orgId] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['roles', orgId] })
+      setConfirmDelete(false)
+    },
+    onError: (err: unknown) => {
+      const e = err as { response?: { data?: { detail?: string } } }
+      setDeleteError(e?.response?.data?.detail ?? 'Failed to delete role')
+    },
   })
 
   const permCount = Object.keys(role.permissions).length
@@ -242,13 +251,39 @@ function RoleCard({ role, orgId, endpoints }: { role: Role; orgId: string; endpo
                 <button onClick={() => setEditing(true)} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600">
                   <Edit2 className="h-3.5 w-3.5" />
                 </button>
-                <button
-                  onClick={() => deleteMutation.mutate()}
-                  disabled={deleteMutation.isPending}
-                  className="p-1.5 rounded-lg hover:bg-rose-50 text-slate-400 hover:text-rose-500"
-                >
-                  {deleteMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-                </button>
+                {!confirmDelete ? (
+                  <button
+                    onClick={() => setConfirmDelete(true)}
+                    className="p-1.5 rounded-lg hover:bg-rose-50 text-slate-400 hover:text-rose-500"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                ) : (
+                  <div className="flex flex-col items-end gap-1">
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => deleteMutation.mutate()}
+                        disabled={deleteMutation.isPending}
+                        className="text-xs px-2 py-1 bg-rose-600 text-white rounded hover:bg-rose-700 disabled:opacity-60 flex items-center gap-1"
+                      >
+                        {deleteMutation.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
+                        Delete
+                      </button>
+                      <button
+                        onClick={() => { setConfirmDelete(false); setDeleteError(null) }}
+                        className="text-xs px-2 py-1 border border-slate-300 rounded hover:bg-slate-50"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                    {deleteError && (
+                      <p className="text-rose-600 text-xs flex items-center gap-1">
+                        <AlertCircle className="h-3 w-3 shrink-0" />
+                        {deleteError}
+                      </p>
+                    )}
+                  </div>
+                )}
               </>
             )}
             <button

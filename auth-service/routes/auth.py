@@ -342,6 +342,33 @@ async def get_current_user(
     return user
 
 
+@router.delete("/me")
+async def delete_account(
+    authorization: str = Header(...),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Delete the current user's account permanently."""
+    token = TokenService.get_token_from_header(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Invalid authorization header")
+    payload = TokenService.verify_access_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    user_id = UUID(payload.get("sub"))
+    user = await UserService.get_user_by_id(db, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    try:
+        await db.delete(user)
+        await db.commit()
+        return {"message": "Account deleted successfully"}
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=f"Error deleting account: {str(e)}")
+
+
 @router.post("/change-password")
 async def change_password(
     password_data: ChangePasswordRequest,

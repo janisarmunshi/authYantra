@@ -3,7 +3,8 @@ import { useQuery, useMutation } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
 import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { KeyRound, Loader2, AlertCircle, CheckCircle2, User } from 'lucide-react'
+import { KeyRound, Loader2, AlertCircle, CheckCircle2, User, Trash2 } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import { authApi } from '@/api/auth'
 import { useAuth } from '@/context/AuthContext'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -21,9 +22,12 @@ const passwordSchema = z
 type PasswordForm = z.infer<typeof passwordSchema>
 
 export function ProfilePage() {
-  const { user: authUser } = useAuth()
+  const { user: authUser, logout } = useAuth()
+  const navigate = useNavigate()
   const [pwSuccess, setPwSuccess] = useState(false)
   const [pwError, setPwError] = useState<string | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   const { data: me, isLoading } = useQuery({
     queryKey: ['me'],
@@ -37,7 +41,7 @@ export function ProfilePage() {
   const passwordMutation = useMutation({
     mutationFn: (data: PasswordForm) =>
       authApi.changePassword({
-        current_password: data.current_password,
+        old_password: data.current_password,
         new_password: data.new_password,
       }),
     onSuccess: () => {
@@ -49,6 +53,18 @@ export function ProfilePage() {
     onError: (err: unknown) => {
       const e = err as { response?: { data?: { detail?: string } } }
       setPwError(e?.response?.data?.detail ?? 'Failed to change password')
+    },
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: authApi.deleteMe,
+    onSuccess: () => {
+      logout()
+      navigate('/login')
+    },
+    onError: (err: unknown) => {
+      const e = err as { response?: { data?: { detail?: string } } }
+      setDeleteError(e?.response?.data?.detail ?? 'Failed to delete account')
     },
   })
 
@@ -95,7 +111,7 @@ export function ProfilePage() {
       </div>
 
       {/* Change password */}
-      <div className="bg-white rounded-xl border border-slate-200 p-5">
+      <div className="bg-white rounded-xl border border-slate-200 p-5 mb-5">
         <h3 className="font-semibold text-slate-800 mb-1 flex items-center gap-2">
           <KeyRound className="h-4 w-4 text-indigo-500" />
           Change Password
@@ -142,6 +158,56 @@ export function ProfilePage() {
             Update Password
           </button>
         </form>
+      </div>
+
+      {/* Delete account */}
+      <div className="bg-white rounded-xl border border-rose-200 p-5">
+        <h3 className="font-semibold text-slate-800 mb-1 flex items-center gap-2">
+          <Trash2 className="h-4 w-4 text-rose-500" />
+          Delete Account
+        </h3>
+        <p className="text-sm text-slate-500 mb-4">
+          Permanently delete your account. This will remove you from all organizations and cannot be undone.
+        </p>
+
+        {deleteError && (
+          <div className="flex items-start gap-2 p-3 mb-4 bg-rose-50 border border-rose-200 rounded-lg text-rose-700 text-sm">
+            <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+            {deleteError}
+          </div>
+        )}
+
+        {!confirmDelete ? (
+          <button
+            onClick={() => setConfirmDelete(true)}
+            className="flex items-center gap-2 px-4 py-2 border border-rose-300 text-rose-600 hover:bg-rose-50 rounded-lg text-sm font-medium transition-colors"
+          >
+            <Trash2 className="h-4 w-4" />
+            Delete My Account
+          </button>
+        ) : (
+          <div className="p-4 bg-rose-50 border border-rose-200 rounded-lg">
+            <p className="text-sm font-medium text-rose-800 mb-3">
+              Are you sure? This action is permanent and cannot be undone.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => { setConfirmDelete(false); setDeleteError(null) }}
+                className="flex-1 py-2 border border-slate-300 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => deleteMutation.mutate()}
+                disabled={deleteMutation.isPending}
+                className="flex-1 flex items-center justify-center gap-2 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-sm font-medium disabled:opacity-60"
+              >
+                {deleteMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+                Yes, Delete My Account
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

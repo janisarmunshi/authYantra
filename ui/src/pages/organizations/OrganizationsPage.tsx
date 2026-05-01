@@ -88,6 +88,7 @@ function OrgCard({ org, isCurrent }: { org: OrgSummary; isCurrent: boolean }) {
   const { completeOrgSelection, logout } = useAuth()
   const queryClient = useQueryClient()
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   const switchMutation = useMutation({
     mutationFn: () => authApi.switchOrg(org.id),
@@ -103,7 +104,6 @@ function OrgCard({ org, isCurrent }: { org: OrgSummary; isCurrent: boolean }) {
     onSuccess: async () => {
       queryClient.invalidateQueries({ queryKey: ['my-orgs'] })
       if (isCurrent) {
-        // Get remaining orgs and switch to first, or logout
         const remaining = await authApi.myOrgs().catch(() => [])
         const next = remaining.find((o: OrgSummary) => o.id !== org.id)
         if (next) {
@@ -115,6 +115,10 @@ function OrgCard({ org, isCurrent }: { org: OrgSummary; isCurrent: boolean }) {
         }
       }
       setConfirmDelete(false)
+    },
+    onError: (err: unknown) => {
+      const e = err as { response?: { data?: { detail?: string } } }
+      setDeleteError(e?.response?.data?.detail ?? 'Failed to delete organization')
     },
   })
 
@@ -152,24 +156,33 @@ function OrgCard({ org, isCurrent }: { org: OrgSummary; isCurrent: boolean }) {
               <button
                 onClick={() => setConfirmDelete(true)}
                 className="p-1.5 rounded-lg hover:bg-rose-50 text-slate-400 hover:text-rose-500 transition-colors"
-                title="Delete organization"
               >
                 <Trash2 className="h-4 w-4" />
               </button>
             ) : (
-              <div className="flex items-center gap-1">
-                <button
-                  onClick={() => deleteMutation.mutate()}
-                  disabled={deleteMutation.isPending}
-                  className="text-xs px-2 py-1 bg-rose-600 text-white rounded hover:bg-rose-700 disabled:opacity-60 flex items-center gap-1"
-                >
-                  {deleteMutation.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
-                  Delete
-                </button>
-                <button onClick={() => setConfirmDelete(false)}
-                  className="text-xs px-2 py-1 border border-slate-300 rounded hover:bg-slate-50">
-                  Cancel
-                </button>
+              <div className="flex flex-col items-end gap-1">
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => deleteMutation.mutate()}
+                    disabled={deleteMutation.isPending}
+                    className="text-xs px-2 py-1 bg-rose-600 text-white rounded hover:bg-rose-700 disabled:opacity-60 flex items-center gap-1"
+                  >
+                    {deleteMutation.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
+                    Delete
+                  </button>
+                  <button
+                    onClick={() => { setConfirmDelete(false); setDeleteError(null) }}
+                    className="text-xs px-2 py-1 border border-slate-300 rounded hover:bg-slate-50"
+                  >
+                    Cancel
+                  </button>
+                </div>
+                {deleteError && (
+                  <p className="text-rose-600 text-xs flex items-center gap-1">
+                    <AlertCircle className="h-3 w-3 shrink-0" />
+                    {deleteError}
+                  </p>
+                )}
               </div>
             )}
           </div>

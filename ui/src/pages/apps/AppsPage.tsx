@@ -44,10 +44,15 @@ function ApiKeyDisplay({ apiKey }: { apiKey: string }) {
 function AppCard({ app, orgId }: { app: RegisteredApp; orgId: string }) {
   const queryClient = useQueryClient()
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   const deleteMutation = useMutation({
     mutationFn: () => organizationsApi.deleteApp(orgId, app.id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['apps', orgId] }),
+    onError: (err: unknown) => {
+      const e = err as { response?: { data?: { detail?: string } } }
+      setDeleteError(e?.response?.data?.detail ?? 'Failed to delete app')
+    },
   })
 
   const typeColors: Record<string, string> = {
@@ -82,16 +87,24 @@ function AppCard({ app, orgId }: { app: RegisteredApp; orgId: string }) {
               <Trash2 className="h-4 w-4" />
             </button>
           ) : (
-            <div className="flex items-center gap-1">
-              <button onClick={() => deleteMutation.mutate()} disabled={deleteMutation.isPending}
-                className="text-xs px-2 py-1 bg-rose-600 text-white rounded hover:bg-rose-700 disabled:opacity-60 flex items-center gap-1">
-                {deleteMutation.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
-                Delete
-              </button>
-              <button onClick={() => setConfirmDelete(false)}
-                className="text-xs px-2 py-1 border border-slate-300 rounded hover:bg-slate-50">
-                Cancel
-              </button>
+            <div className="flex flex-col items-end gap-1">
+              <div className="flex items-center gap-1">
+                <button onClick={() => deleteMutation.mutate()} disabled={deleteMutation.isPending}
+                  className="text-xs px-2 py-1 bg-rose-600 text-white rounded hover:bg-rose-700 disabled:opacity-60 flex items-center gap-1">
+                  {deleteMutation.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
+                  Delete
+                </button>
+                <button onClick={() => { setConfirmDelete(false); setDeleteError(null) }}
+                  className="text-xs px-2 py-1 border border-slate-300 rounded hover:bg-slate-50">
+                  Cancel
+                </button>
+              </div>
+              {deleteError && (
+                <p className="text-rose-600 text-xs flex items-center gap-1">
+                  <AlertCircle className="h-3 w-3 shrink-0" />
+                  {deleteError}
+                </p>
+              )}
             </div>
           )}
         </div>

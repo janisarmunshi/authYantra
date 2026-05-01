@@ -38,11 +38,11 @@ class Organization(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
     users = relationship("User", back_populates="organization", foreign_keys="User.organization_id")
-    roles = relationship("Role", back_populates="organization", cascade="all, delete-orphan")
-    apps = relationship("RegisteredApp", back_populates="organization", cascade="all, delete-orphan")
-    memberships = relationship("UserOrganization", back_populates="organization", cascade="all, delete-orphan")
+    roles = relationship("Role", back_populates="organization", cascade="all, delete-orphan", passive_deletes=True)
+    apps = relationship("RegisteredApp", back_populates="organization", cascade="all, delete-orphan", passive_deletes=True)
+    memberships = relationship("UserOrganization", back_populates="organization", cascade="all, delete-orphan", passive_deletes=True)
     invites = relationship("OrgInvite", back_populates="organization", cascade="all, delete-orphan",
-                           foreign_keys="OrgInvite.org_id")
+                           foreign_keys="OrgInvite.org_id", passive_deletes=True)
 
     __table_args__ = (
         Index("ix_organizations_entra_id_tenant_id", "entra_id_tenant_id"),
@@ -65,9 +65,9 @@ class User(Base):
 
     organization = relationship("Organization", back_populates="users", foreign_keys=[organization_id])
     roles = relationship("Role", secondary=user_roles_table, back_populates="users")
-    refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
+    refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan", passive_deletes=True)
     memberships = relationship("UserOrganization", back_populates="user",
-                               cascade="all, delete-orphan", foreign_keys="UserOrganization.user_id")
+                               cascade="all, delete-orphan", passive_deletes=True, foreign_keys="UserOrganization.user_id")
 
     __table_args__ = (
         Index("ix_users_organization_id", "organization_id"),
