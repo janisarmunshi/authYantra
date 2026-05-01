@@ -642,15 +642,18 @@ async def list_users(
     if not is_authorized:
         raise HTTPException(status_code=403, detail=error or "Access denied")
 
+    from models import UserOrganization
     result = await db.execute(
-        select(User).where(User.organization_id == org_id).order_by(User.created_at)
+        select(User)
+        .join(UserOrganization, (UserOrganization.user_id == User.id) & (UserOrganization.org_id == org_id))
+        .order_by(User.created_at)
     )
     users = result.scalars().all()
 
     return [
         {
             "id": str(u.id),
-            "organization_id": str(u.organization_id),
+            "organization_id": str(u.organization_id) if u.organization_id else None,
             "email": u.email,
             "username": u.username,
             "is_active": u.is_active,
@@ -691,20 +694,12 @@ async def delete_user(
     if str(user_id) == requester_id:
         raise HTTPException(status_code=400, detail="You cannot delete your own account")
 
-    result = await db.execute(
-        select(User).where(User.id == user_id, User.organization_id == org_id)
-    )
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    try:
-        await db.delete(user)
-        await db.commit()
-        return {"message": "User deleted successfully"}
-    except Exception as e:
-        await db.rollback()
-        raise HTTPException(status_code=400, detail=f"Error deleting user: {str(e)}")
+    from models import UserOrganization
+    from services.user_service import UserService
+    success, error = await UserService.remove_user_from_org(db, user_id, org_id)
+    if not success:
+        raise HTTPException(status_code=404, detail=error or "User not found in this organization")
+    return {"message": "User removed from organization"}
 
 
 @router.get("/users/{user_id}/roles/{org_id}")

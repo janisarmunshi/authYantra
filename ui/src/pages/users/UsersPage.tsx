@@ -9,6 +9,7 @@ import {
 import { authApi } from '@/api/auth'
 import { rolesApi } from '@/api/roles'
 import { usersApi } from '@/api/users'
+import { organizationsApi } from '@/api/organizations'
 import { useAuth } from '@/context/AuthContext'
 import { PageHeader } from '@/components/ui/PageHeader'
 import type { User, Role } from '@/types'
@@ -31,7 +32,10 @@ function CreateUserModal({ orgId, onClose }: { orgId: string; onClose: () => voi
   const onSubmit = async (data: RegisterForm) => {
     setError(null)
     try {
-      await authApi.register({ ...data, organization_id: orgId })
+      // Step 1: create the account (no org required)
+      await authApi.register(data)
+      // Step 2: add them to this org as member
+      await organizationsApi.addMember(orgId, data.email, 'member')
       queryClient.invalidateQueries({ queryKey: ['users', orgId] })
       onClose()
     } catch (err: unknown) {

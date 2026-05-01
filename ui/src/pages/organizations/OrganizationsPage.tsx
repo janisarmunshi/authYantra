@@ -3,12 +3,13 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
 import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { Plus, Building2, Loader2, AlertCircle, ChevronRight } from 'lucide-react'
+import { Plus, Building2, Loader2, AlertCircle, ChevronRight, Star } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { organizationsApi } from '@/api/organizations'
+import { authApi } from '@/api/auth'
 import { useAuth } from '@/context/AuthContext'
 import { PageHeader } from '@/components/ui/PageHeader'
-import type { Organization } from '@/types'
+import type { OrgSummary } from '@/types'
 
 const createSchema = z.object({
   name: z.string().min(2, 'Name must be at least 2 characters'),
@@ -17,6 +18,7 @@ type CreateForm = z.infer<typeof createSchema>
 
 function CreateOrgModal({ onClose }: { onClose: () => void }) {
   const queryClient = useQueryClient()
+  const { completeOrgSelection } = useAuth()
   const [error, setError] = useState<string | null>(null)
 
   const { register, handleSubmit, formState: { errors, isSubmitting } } = useForm<CreateForm>({
@@ -24,9 +26,15 @@ function CreateOrgModal({ onClose }: { onClose: () => void }) {
   })
 
   const mutation = useMutation({
-    mutationFn: (data: CreateForm) => organizationsApi.create(data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['org'] })
+    mutationFn: async (data: CreateForm) => {
+      const org = await organizationsApi.create(data)
+      // Refresh token so the new org appears in JWT context
+      const tokens = await authApi.switchOrg(org.id)
+      return { org, tokens }
+    },
+    onSuccess: ({ tokens }) => {
+      completeOrgSelection(tokens.access_token, tokens.refresh_token)
+      queryClient.invalidateQueries({ queryKey: ['my-orgs'] })
       onClose()
     },
     onError: (err: unknown) => {
@@ -49,32 +57,22 @@ function CreateOrgModal({ onClose }: { onClose: () => void }) {
 
         <form onSubmit={handleSubmit((d) => mutation.mutate(d))} className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">
-              Organization Name
-            </label>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">Organization Name</label>
             <input
               {...register('name')}
               placeholder="Acme Corp"
               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
             />
-            {errors.name && (
-              <p className="text-rose-500 text-xs mt-1">{errors.name.message}</p>
-            )}
+            {errors.name && <p className="text-rose-500 text-xs mt-1">{errors.name.message}</p>}
           </div>
 
           <div className="flex gap-3 pt-1">
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex-1 py-2 px-4 border border-slate-300 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-50 transition-colors"
-            >
+            <button type="button" onClick={onClose}
+              className="flex-1 py-2 px-4 border border-slate-300 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-50">
               Cancel
             </button>
-            <button
-              type="submit"
-              disabled={isSubmitting || mutation.isPending}
-              className="flex-1 flex items-center justify-center gap-2 py-2 px-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-60"
-            >
+            <button type="submit" disabled={isSubmitting || mutation.isPending}
+              className="flex-1 flex items-center justify-center gap-2 py-2 px-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium disabled:opacity-60">
               {mutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
               Create
             </button>
@@ -85,12 +83,26 @@ function CreateOrgModal({ onClose }: { onClose: () => void }) {
   )
 }
 
-function OrgCard({ org }: { org: Organization }) {
+function OrgCard({ org, isCurrent }: { org: OrgSummary; isCurrent: boolean }) {
   const navigate = useNavigate()
+  const { completeOrgSelection } = useAuth()
+  const queryClient = useQueryClient()
+
+  const switchMutation = useMutation({
+    mutationFn: () => authApi.switchOrg(org.id),
+    onSuccess: (tokens) => {
+      completeOrgSelection(tokens.access_token, tokens.refresh_token)
+      queryClient.invalidateQueries()
+      navigate(`/organizations/${org.id}`)
+    },
+  })
+
   return (
     <div
-      onClick={() => navigate(`/organizations/${org.id}`)}
-      className="bg-white rounded-xl border border-slate-200 p-5 hover:border-indigo-300 hover:shadow-sm cursor-pointer transition-all group"
+      className={`bg-white rounded-xl border p-5 cursor-pointer transition-all group ${
+        isCurrent ? 'border-indigo-300 shadow-sm' : 'border-slate-200 hover:border-indigo-300 hover:shadow-sm'
+      }`}
+      onClick={() => isCurrent ? navigate(`/organizations/${org.id}`) : switchMutation.mutate()}
     >
       <div className="flex items-start justify-between">
         <div className="flex items-center gap-3">
@@ -98,30 +110,20 @@ function OrgCard({ org }: { org: Organization }) {
             {org.name[0]}
           </div>
           <div>
-            <p className="font-semibold text-slate-900">{org.name}</p>
-            <p className="text-xs text-slate-400 font-mono mt-0.5">{org.id}</p>
+            <div className="flex items-center gap-2">
+              <p className="font-semibold text-slate-900">{org.name}</p>
+              {org.is_default && <Star className="h-3.5 w-3.5 text-amber-400 fill-amber-400" title="Default" />}
+              {isCurrent && (
+                <span className="text-xs px-1.5 py-0.5 bg-indigo-100 text-indigo-700 rounded font-medium">Active</span>
+              )}
+            </div>
+            <p className="text-xs text-slate-400 capitalize mt-0.5">{org.role}</p>
           </div>
         </div>
-        <ChevronRight className="h-4 w-4 text-slate-400 group-hover:text-indigo-500 transition-colors" />
-      </div>
-      <div className="flex items-center gap-4 mt-4">
-        <span
-          className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-            org.is_active
-              ? 'bg-emerald-100 text-emerald-700'
-              : 'bg-slate-100 text-slate-500'
-          }`}
-        >
-          {org.is_active ? 'Active' : 'Inactive'}
-        </span>
-        {org.entra_id_tenant_id && (
-          <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-blue-100 text-blue-700">
-            Entra ID
-          </span>
-        )}
-        <span className="text-xs text-slate-400 ml-auto">
-          {new Date(org.created_at).toLocaleDateString()}
-        </span>
+        {switchMutation.isPending
+          ? <Loader2 className="h-4 w-4 animate-spin text-indigo-500" />
+          : <ChevronRight className="h-4 w-4 text-slate-400 group-hover:text-indigo-500 transition-colors" />
+        }
       </div>
     </div>
   )
@@ -131,24 +133,20 @@ export function OrganizationsPage() {
   const { user } = useAuth()
   const [showCreate, setShowCreate] = useState(false)
 
-  // In real multi-tenant setup, you'd list orgs from an admin endpoint.
-  // For now we show the current user's org.
-  const { data: org, isLoading } = useQuery({
-    queryKey: ['org', user?.org_id],
-    queryFn: () => organizationsApi.getById(user!.org_id),
-    enabled: !!user?.org_id,
+  const { data: orgs = [], isLoading } = useQuery({
+    queryKey: ['my-orgs'],
+    queryFn: authApi.myOrgs,
+    enabled: !!user,
   })
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
       <PageHeader
         title="Organizations"
-        description="Manage organizations and their configurations"
+        description="Manage your organizations"
         action={
-          <button
-            onClick={() => setShowCreate(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium transition-colors"
-          >
+          <button onClick={() => setShowCreate(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium transition-colors">
             <Plus className="h-4 w-4" />
             New Organization
           </button>
@@ -156,20 +154,25 @@ export function OrganizationsPage() {
       />
 
       {isLoading && (
-        <div className="flex items-center gap-2 text-slate-500">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          Loading…
+        <div className="flex items-center gap-2 text-slate-500 text-sm">
+          <Loader2 className="h-4 w-4 animate-spin" />Loading…
         </div>
       )}
 
       <div className="space-y-3">
-        {org && <OrgCard org={org} />}
+        {orgs.map((org) => (
+          <OrgCard key={org.id} org={org} isCurrent={org.id === user?.org_id} />
+        ))}
       </div>
 
-      {!isLoading && !org && (
+      {!isLoading && orgs.length === 0 && (
         <div className="text-center py-12">
           <Building2 className="h-10 w-10 text-slate-300 mx-auto mb-3" />
-          <p className="text-slate-500">No organizations found.</p>
+          <p className="text-slate-500 mb-4">You don't belong to any organization yet.</p>
+          <button onClick={() => setShowCreate(true)}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium">
+            <Plus className="h-4 w-4" />Create your first organization
+          </button>
         </div>
       )}
 
