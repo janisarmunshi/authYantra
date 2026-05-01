@@ -4,14 +4,14 @@ from datetime import datetime
 from uuid import UUID
 
 
-# Organization Schemas
+# ── Organization ──────────────────────────────────────────────────────────────
+
 class OrganizationCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     entra_id_tenant_id: Optional[str] = None
 
 
 class OrganizationEntraIDUpdate(BaseModel):
-    """Schema for updating Entra ID configuration for an organization"""
     entra_id_tenant_id: str = Field(..., min_length=1)
     entra_id_client_id: str = Field(..., min_length=1)
     entra_id_client_secret: str = Field(..., min_length=1)
@@ -28,12 +28,52 @@ class OrganizationResponse(BaseModel):
         from_attributes = True
 
 
-# User Schemas
+class OrgSummary(BaseModel):
+    id: str
+    name: str
+    role: str
+    is_default: bool
+
+
+# ── Membership & Invites ──────────────────────────────────────────────────────
+
+class OrgMemberAdd(BaseModel):
+    email: EmailStr
+    role: str = Field("member", pattern="^(admin|member)$")
+
+
+class OrgMemberResponse(BaseModel):
+    user_id: str
+    email: str
+    username: Optional[str]
+    role: str
+    is_default: bool
+    joined_at: datetime
+
+
+class OrgInviteCreate(BaseModel):
+    email: EmailStr
+    role: str = Field("member", pattern="^(admin|member)$")
+
+
+class OrgInviteAccept(BaseModel):
+    token: str
+
+
+class OrgInviteResponse(BaseModel):
+    id: str
+    invited_email: str
+    role: str
+    expires_at: datetime
+    accepted_at: Optional[datetime]
+
+
+# ── User ──────────────────────────────────────────────────────────────────────
+
 class UserRegister(BaseModel):
     email: EmailStr
     username: Optional[str] = Field(None, min_length=3, max_length=255)
     password: str = Field(..., min_length=8)
-    organization_id: UUID
 
 
 class UserLogin(BaseModel):
@@ -46,13 +86,15 @@ class UserResponse(BaseModel):
     email: str
     username: Optional[str]
     is_active: bool
+    organization_id: Optional[UUID]
     created_at: datetime
 
     class Config:
         from_attributes = True
 
 
-# Token Schemas
+# ── Token ─────────────────────────────────────────────────────────────────────
+
 class TokenRequest(BaseModel):
     email: EmailStr
     password: str
@@ -62,7 +104,17 @@ class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
-    expires_in: int  # seconds
+    expires_in: int
+
+
+class LoginResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    org_id: Optional[str] = None
+    needs_org_selection: bool = False
+    organizations: List[OrgSummary] = []
 
 
 class TokenRefreshRequest(BaseModel):
@@ -84,13 +136,11 @@ class TokenRevokeRequest(BaseModel):
     refresh_token: str
 
 
-# Role Schemas
+# ── Role ──────────────────────────────────────────────────────────────────────
+
 class RoleCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=255, description="Role name (e.g., 'viewer', 'editor')")
-    permissions: dict = Field(
-        default={},
-        description="Permission mapping: endpoint -> list of allowed actions. Example: {'/api/users': ['read', 'write'], '/api/reports': ['read']}"
-    )
+    name: str = Field(..., min_length=1, max_length=255)
+    permissions: dict = Field(default={})
 
 
 class RoleUpdate(BaseModel):
@@ -109,11 +159,12 @@ class RoleResponse(BaseModel):
         from_attributes = True
 
 
-# Endpoint Schemas
+# ── Endpoint ──────────────────────────────────────────────────────────────────
+
 class EndpointRegisterRequest(BaseModel):
-    endpoint: str = Field(..., min_length=1, description="API endpoint path, e.g. /api/users")
-    actions: List[str] = Field(default=[], description="Allowed actions, e.g. ['read', 'write']")
-    description: Optional[str] = None
+    endpoint: str = Field(..., min_length=1)
+    actions: List[str] = Field(default=["read", "write", "delete", "modify"])
+    description: Optional[str] = Field(None, max_length=500)
 
 
 class EndpointResponse(BaseModel):
@@ -128,12 +179,14 @@ class EndpointResponse(BaseModel):
         from_attributes = True
 
 
-# User-Role Assignment
+# ── User-Role Assignment ──────────────────────────────────────────────────────
+
 class UserRoleAssignRequest(BaseModel):
-    role_id: UUID
+    role_id: UUID = Field(..., description="ID of the role to assign")
 
 
-# Registered App Schemas
+# ── Registered App ────────────────────────────────────────────────────────────
+
 class RegisteredAppCreate(BaseModel):
     app_name: str = Field(..., min_length=1, max_length=255)
     app_type: str = Field(..., description="web, desktop, or mobile")
@@ -152,93 +205,20 @@ class RegisteredAppResponse(BaseModel):
         from_attributes = True
 
 
-# Error Schemas
-class ErrorResponse(BaseModel):
-    detail: str
-    error_code: Optional[str] = None
+# ── Password ──────────────────────────────────────────────────────────────────
 
-
-# Health Check
-class HealthResponse(BaseModel):
-    status: str
-    version: str
-    environment: str
-
-# Entra ID OAuth Schemas
-class EntraIDAuthorizationRequest(BaseModel):
-    organization_id: UUID
-    redirect_uri: str
-    link_account: bool = Field(False, description="Whether to link to existing account")
-
-
-class EntraIDAuthorizationResponse(BaseModel):
-    authorization_url: str = Field(..., description="URL to redirect user to Entra ID login")
-    state: str = Field(..., description="CSRF protection token")
-
-
-class EntraIDCallbackRequest(BaseModel):
-    code: str = Field(..., description="Authorization code from Entra ID")
-    state: str = Field(..., description="CSRF protection token")
-    organization_id: UUID
-
-
-class EntraIDUserInfo(BaseModel):
-    id: str = Field(..., description="Entra ID object ID")
-    email: str
-    name: Optional[str]
-
-
-class LinkAccountRequest(BaseModel):
-    entra_id: str = Field(..., description="Entra ID object ID to link")
-
-
-class UnlinkAccountRequest(BaseModel):
-    pass  # Just needs authorization header
-
-
-class EntraIDLoginResponse(BaseModel):
-    message: str
-
-
-# Change Password Schema
 class ChangePasswordRequest(BaseModel):
-    old_password: str = Field(..., min_length=1, description="Current password")
-    new_password: str = Field(..., min_length=8, description="New password (minimum 8 characters)")
+    old_password: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=8)
 
 
-# Endpoint Registration Schema
-class EndpointRegisterRequest(BaseModel):
-    endpoint: str = Field(..., min_length=1, description="API endpoint path (e.g., '/api/users', '/api/reports')")
-    actions: List[str] = Field(
-        default=["read", "write", "delete", "modify"],
-        description="Available actions for this endpoint (e.g., read, write, delete, modify)"
-    )
-    description: Optional[str] = Field(None, max_length=500, description="Optional description of the endpoint")
-
-
-class EndpointResponse(BaseModel):
-    endpoint: str
-    actions: List[str]
-    description: Optional[str]
-
-    class Config:
-        from_attributes = True
-
-
-# User Role Assignment Schema
-class UserRoleAssignRequest(BaseModel):
-    role_id: UUID = Field(..., description="ID of the role to assign")
-
-
-# Forgot / Reset Password Schemas
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
-    organization_id: UUID
 
 
 class ResetPasswordRequest(BaseModel):
     token: str = Field(..., min_length=1)
-    new_password: str = Field(..., min_length=8, description="New password (minimum 8 characters)")
+    new_password: str = Field(..., min_length=8)
 
 
 class ResetPasswordVerifyResponse(BaseModel):
@@ -247,3 +227,53 @@ class ResetPasswordVerifyResponse(BaseModel):
     message: Optional[str] = None
 
 
+# ── Entra ID ──────────────────────────────────────────────────────────────────
+
+class EntraIDAuthorizationRequest(BaseModel):
+    organization_id: UUID
+    redirect_uri: str
+    link_account: bool = False
+
+
+class EntraIDAuthorizationResponse(BaseModel):
+    authorization_url: str
+    state: str
+
+
+class EntraIDCallbackRequest(BaseModel):
+    code: str
+    state: str
+    organization_id: UUID
+
+
+class EntraIDUserInfo(BaseModel):
+    id: str
+    email: str
+    name: Optional[str]
+
+
+class LinkAccountRequest(BaseModel):
+    entra_id: str
+
+
+class UnlinkAccountRequest(BaseModel):
+    pass
+
+
+class EntraIDLoginResponse(BaseModel):
+    message: str
+
+
+# ── Health ────────────────────────────────────────────────────────────────────
+
+class HealthResponse(BaseModel):
+    status: str
+    version: str
+    environment: str
+
+
+# ── Error ─────────────────────────────────────────────────────────────────────
+
+class ErrorResponse(BaseModel):
+    detail: str
+    error_code: Optional[str] = None

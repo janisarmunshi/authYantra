@@ -93,21 +93,23 @@ class AuthService:
     async def is_super_user(
         db: AsyncSession,
         user_id: str,
-        user_org_id: str,
+        user_org_id: Optional[str],
     ) -> bool:
         """Check if user has super_user role"""
         try:
             user_uuid = UUID(user_id) if isinstance(user_id, str) else user_id
-            user_org_uuid = UUID(user_org_id) if isinstance(user_org_id, str) else user_org_id
 
             result = await db.execute(
                 select(User).options(selectinload(User.roles)).where(User.id == user_uuid)
             )
             user = result.scalar_one_or_none()
-
             if not user:
                 return False
 
+            if not user_org_id:
+                return False
+
+            user_org_uuid = UUID(user_org_id) if isinstance(user_org_id, str) else user_org_id
             super_user_result = await db.execute(
                 select(Role).where(
                     Role.organization_id == user_org_uuid,
@@ -115,7 +117,6 @@ class AuthService:
                 )
             )
             super_user_role = super_user_result.scalar_one_or_none()
-
             return bool(super_user_role and super_user_role in user.roles)
 
         except Exception:
@@ -156,35 +157,45 @@ class AuthService:
     async def verify_org_ownership_or_admin(
         db: AsyncSession,
         user_id: str,
-        user_org_id: str,
+        user_org_id: Optional[str],
         requested_org_id: UUID,
     ) -> Tuple[bool, Optional[str]]:
         """
         Verify user can access an organization.
-        
+
         Access Rules:
-        - Super Users (super_user role) can access any organization
-        - Organization Admins can access only their own organization
-        - Regular users can only access their own organization
-        
-        Returns:
-            (is_authorized: bool, error_message: Optional[str])
+        - Super Users can access any organization
+        - Regular users/admins must be a member of the org (checked via user_organizations table)
         """
         try:
-            user_uuid = UUID(user_id) if isinstance(user_id, str) else user_id
-            user_org_uuid = UUID(user_org_id) if isinstance(user_org_id, str) else user_org_id
+            from models import UserOrganization
+            from sqlalchemy import select as sa_select
 
-            # Check for super_user role (can access any organization)
+            user_uuid = UUID(user_id) if isinstance(user_id, str) else user_id
+
             is_super = await AuthService.is_super_user(db, user_id, user_org_id)
             if is_super:
                 return True, None
 
-            # For regular users and org admins, check if they belong to the organization
-            if user_org_uuid != requested_org_id:
-                return False, "Access denied: You can only access your own organization"
+            # Check membership table
+            m = await db.execute(
+                sa_select(UserOrganization).where(
+                    UserOrganization.user_id == user_uuid,
+                    UserOrganization.org_id == requested_org_id,
+                )
+            )
+            if m.scalar_one_or_none():
+                return True, None
 
-            # User belongs to the requested organization
-            return True, None
+            # Fallback: token org_id matches
+            if user_org_id:
+                try:
+                    if UUID(user_org_id) == requested_org_id:
+                        return True, None
+                except Exception:
+                    pass
+
+            return False, "Access denied: You are not a member of this organization"
 
         except Exception as e:
             return False, f"Authorization check failed: {str(e)}"

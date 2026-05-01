@@ -1,4 +1,4 @@
-// ─── Organizations ───────────────────────────────────────────────────────────
+// ─── Organizations ────────────────────────────────────────────────────────────
 
 export interface Organization {
   id: string
@@ -8,6 +8,30 @@ export interface Organization {
   is_active: boolean
   created_at: string
   updated_at: string
+}
+
+export interface OrgSummary {
+  id: string
+  name: string
+  role: string
+  is_default: boolean
+}
+
+export interface OrgMember {
+  user_id: string
+  email: string
+  username: string | null
+  role: string
+  is_default: boolean
+  joined_at: string
+}
+
+export interface OrgInvite {
+  id: string
+  invited_email: string
+  role: string
+  expires_at: string
+  accepted_at: string | null
 }
 
 export interface CreateOrganizationRequest {
@@ -24,7 +48,7 @@ export interface UpdateEntraIdRequest {
 
 export interface User {
   id: string
-  organization_id: string
+  organization_id: string | null
   email: string
   username: string | null
   is_active: boolean
@@ -37,17 +61,15 @@ export interface RegisterUserRequest {
   email: string
   password: string
   username?: string
-  organization_id: string
 }
 
 export interface LoginRequest {
   email: string
   password: string
-  organization_id: string
 }
 
 export interface ChangePasswordRequest {
-  current_password: string
+  old_password: string
   new_password: string
 }
 
@@ -59,17 +81,20 @@ export interface TokenResponse {
   token_type: string
 }
 
+export interface LoginResponse extends TokenResponse {
+  expires_in: number
+  org_id: string | null
+  needs_org_selection: boolean
+  organizations: OrgSummary[]
+}
+
 export interface TokenPayload {
   sub: string
-  org_id: string
+  org_id: string | null
   roles: string[]
   type: string
   exp: number
   iat: number
-}
-
-export interface RefreshTokenRequest {
-  refresh_token: string
 }
 
 // ─── Roles ────────────────────────────────────────────────────────────────────
@@ -137,7 +162,7 @@ export interface RegisterEndpointRequest {
 
 export interface AuthUser {
   user_id: string
-  org_id: string
+  org_id: string | null
   email: string
   roles: string[]
 }

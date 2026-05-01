@@ -7,7 +7,6 @@ import { KeyRound, Loader2, AlertCircle, CheckCircle2, ArrowLeft } from 'lucide-
 import { authApi } from '@/api/auth'
 
 const schema = z.object({
-  organization_id: z.string().min(1, 'Organization ID is required'),
   email: z.string().email('Enter a valid email address'),
 })
 type FormData = z.infer<typeof schema>
@@ -26,7 +25,7 @@ export function ForgotPasswordPage() {
   const onSubmit = async (data: FormData) => {
     setError(null)
     try {
-      await authApi.forgotPassword(data.email, data.organization_id)
+      await authApi.forgotPassword(data.email)
       setSubmitted(true)
     } catch {
       // Always show success to prevent email enumeration —
@@ -77,7 +76,7 @@ export function ForgotPasswordPage() {
               <div className="mb-6">
                 <h2 className="text-lg font-semibold text-slate-800">Forgot your password?</h2>
                 <p className="text-sm text-slate-500 mt-1">
-                  Enter your organization ID and email address and we'll send you a reset link.
+                  Enter your email address and we'll send you a reset link.
                 </p>
               </div>
 
@@ -89,20 +88,6 @@ export function ForgotPasswordPage() {
               )}
 
               <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1.5">
-                    Organization ID
-                  </label>
-                  <input
-                    {...register('organization_id')}
-                    placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                  />
-                  {errors.organization_id && (
-                    <p className="text-rose-500 text-xs mt-1">{errors.organization_id.message}</p>
-                  )}
-                </div>
-
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1.5">
                     Email address

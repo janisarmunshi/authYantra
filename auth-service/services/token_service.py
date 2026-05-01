@@ -12,13 +12,12 @@ class TokenService:
     """Service for handling JWT tokens"""
 
     @staticmethod
-    def create_access_token(user_id: UUID, organization_id: UUID, roles: list) -> str:
-        """Create access token"""
+    def create_access_token(user_id: UUID, organization_id: Optional[UUID], roles: list) -> str:
         expires_delta = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
         return TokenService._create_token(
             data={
                 "sub": str(user_id),
-                "org_id": str(organization_id),
+                "org_id": str(organization_id) if organization_id else None,
                 "roles": roles,
                 "type": "access",
             },
@@ -26,13 +25,12 @@ class TokenService:
         )
 
     @staticmethod
-    def create_refresh_token(user_id: UUID, organization_id: UUID) -> str:
-        """Create refresh token"""
+    def create_refresh_token(user_id: UUID, organization_id: Optional[UUID]) -> str:
         expires_delta = timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
         return TokenService._create_token(
             data={
                 "sub": str(user_id),
-                "org_id": str(organization_id),
+                "org_id": str(organization_id) if organization_id else None,
                 "type": "refresh",
             },
             expires_delta=expires_delta,
