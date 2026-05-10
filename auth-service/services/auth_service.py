@@ -128,17 +128,20 @@ class AuthService:
         user_id: str,
         org_id: UUID,
     ) -> bool:
-        """Check if user is admin for a specific organization.
-        Uses user_organizations.role — the membership-level admin flag."""
+        """Check if user is owner or admin of an organization."""
         try:
             from models import UserOrganization
+            from sqlalchemy import or_
             user_uuid = UUID(user_id) if isinstance(user_id, str) else user_id
 
             result = await db.execute(
                 select(UserOrganization).where(
                     UserOrganization.user_id == user_uuid,
                     UserOrganization.org_id == org_id,
-                    UserOrganization.role == "admin",
+                    or_(
+                        UserOrganization.role == "owner",
+                        UserOrganization.role == "admin",
+                    ),
                 )
             )
             return result.scalar_one_or_none() is not None

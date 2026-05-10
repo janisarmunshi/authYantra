@@ -12,6 +12,7 @@ import { RolesPage } from '@/pages/roles/RolesPage'
 import { EndpointsPage } from '@/pages/endpoints/EndpointsPage'
 import { AppsPage } from '@/pages/apps/AppsPage'
 import { ProfilePage } from '@/pages/ProfilePage'
+import { AuditLogsPage } from '@/pages/audit/AuditLogsPage'
 import { Loader2 } from 'lucide-react'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -50,6 +51,7 @@ function App() {
         <Route path="roles" element={<RolesPage />} />
         <Route path="endpoints" element={<EndpointsPage />} />
         <Route path="apps" element={<AppsPage />} />
+        <Route path="audit" element={<AuditLogsPage />} />
         <Route path="profile" element={<ProfilePage />} />
       </Route>
 

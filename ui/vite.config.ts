@@ -18,6 +18,10 @@ export default defineConfig({
       '/users': 'http://localhost:8000',
       '/endpoints': 'http://localhost:8000',
       '/health': 'http://localhost:8000',
+      '/mfa': 'http://localhost:8000',
+      '/admin': 'http://localhost:8000',
+      '/oauth': 'http://localhost:8000',
+      '/.well-known': 'http://localhost:8000',
     },
   },
   build: {

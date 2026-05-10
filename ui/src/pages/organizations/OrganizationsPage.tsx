@@ -6,7 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { Plus, Building2, Loader2, AlertCircle, ChevronRight, Star, Trash2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { organizationsApi } from '@/api/organizations'
-import { authApi } from '@/api/auth'
+import { authApi } from '@/api/auth'  // still used for switchOrg (org card click) and myOrgs
 import { useAuth } from '@/context/AuthContext'
 import { PageHeader } from '@/components/ui/PageHeader'
 import type { OrgSummary } from '@/types'
@@ -26,14 +26,10 @@ function CreateOrgModal({ onClose }: { onClose: () => void }) {
   })
 
   const mutation = useMutation({
-    mutationFn: async (data: CreateForm) => {
-      const org = await organizationsApi.create(data)
-      // Refresh token so the new org appears in JWT context
-      const tokens = await authApi.switchOrg(org.id)
-      return { org, tokens }
-    },
-    onSuccess: ({ tokens }) => {
-      completeOrgSelection(tokens.access_token, tokens.refresh_token)
+    mutationFn: (data: CreateForm) => organizationsApi.create(data),
+    onSuccess: (result) => {
+      // Tokens are issued atomically with org creation — no separate switch-org needed
+      completeOrgSelection(result.access_token, result.refresh_token)
       queryClient.invalidateQueries({ queryKey: ['my-orgs'] })
       onClose()
     },

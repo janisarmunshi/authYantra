@@ -1,29 +1,44 @@
 import hashlib
 import secrets
+from datetime import datetime, timedelta
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from uuid import UUID
-from database import get_db_session
-from schemas import (
-    UserRegister, UserLogin, LoginResponse, TokenResponse,
-    TokenRefreshRequest, TokenVerifyRequest, TokenVerifyResponse,
-    UserResponse, ChangePasswordRequest, ForgotPasswordRequest,
-    ResetPasswordRequest, ResetPasswordVerifyResponse,
-    OrgSummary, OrgInviteAccept,
-)
-from services.user_service import UserService
-from services.token_service import TokenService
-from services.rate_limiter import limiter
-from services.email_service import send_password_reset_email
-from models import RefreshToken, PasswordResetToken, UserOrganization, Organization, OrgInvite, User
-from datetime import datetime, timedelta
+
 from config import get_settings
+from database import get_db_session
+from models import (
+    Organization, OrgInvite, PasswordResetToken, RefreshToken,
+    User, UserOrganization,
+)
+from schemas import (
+    ChangePasswordRequest, ForgotPasswordRequest, LoginResponse,
+    OrgInviteAccept, OrgSummary, ResetPasswordRequest,
+    ResetPasswordVerifyResponse, TokenRefreshRequest, TokenResponse,
+    TokenVerifyRequest, TokenVerifyResponse, UserRegister, UserLogin,
+    UserResponse,
+)
+from services.audit_service import AuditService
+from services.email_service import send_password_reset_email
+from services.mfa_service import MfaService
+from services.rate_limiter import limiter
+from services.token_service import TokenService
+from services.user_service import UserService
 
 settings = get_settings()
 router = APIRouter(prefix="/auth", tags=["authentication"])
 
+MAX_FAILED_ATTEMPTS = 5
+LOCKOUT_MINUTES = 15
+# Short-lived token used during MFA challenge (not a full access token)
+MFA_CHALLENGE_EXPIRE_MINUTES = 5
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _org_summaries(memberships) -> list[OrgSummary]:
     return [
@@ -37,20 +52,37 @@ def _org_summaries(memberships) -> list[OrgSummary]:
     ]
 
 
-async def _issue_tokens(db: AsyncSession, user, org_id) -> tuple[str, str]:
+async def _issue_tokens(db: AsyncSession, user: User, org_id) -> tuple[str, str]:
     roles = await UserService.get_user_roles(db, user.id)
     access_token = TokenService.create_access_token(user.id, org_id, roles)
     refresh_token = TokenService.create_refresh_token(user.id, org_id)
-
-    token_hash = TokenService.hash_token(refresh_token)
     db.add(RefreshToken(
         user_id=user.id,
-        token_hash=token_hash,
+        token_hash=TokenService.hash_token(refresh_token),
         expires_at=datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
     ))
     await db.commit()
     return access_token, refresh_token
 
+
+def _make_mfa_challenge_token(user_id: UUID, org_id) -> str:
+    """
+    A short-lived token that proves the user passed password check but
+    hasn't completed MFA yet. Reuses the JWT infrastructure with type='mfa_challenge'.
+    """
+    return TokenService._create_token(
+        data={
+            "sub": str(user_id),
+            "org_id": str(org_id) if org_id else None,
+            "type": "mfa_challenge",
+        },
+        expires_delta=timedelta(minutes=MFA_CHALLENGE_EXPIRE_MINUTES),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Register
+# ---------------------------------------------------------------------------
 
 @router.post("/register", response_model=dict)
 @limiter.limit("10/minute")
@@ -59,7 +91,7 @@ async def register(
     user_data: UserRegister,
     db: AsyncSession = Depends(get_db_session),
 ):
-    """Register a new user (no org required at signup)."""
+    """Register a new user. No org affiliation at signup."""
     user, error = await UserService.register_user(
         db=db,
         email=user_data.email,
@@ -71,6 +103,10 @@ async def register(
     return {"message": "User registered successfully", "user_id": str(user.id)}
 
 
+# ---------------------------------------------------------------------------
+# Login
+# ---------------------------------------------------------------------------
+
 @router.post("/login", response_model=LoginResponse)
 @limiter.limit("5/minute")
 async def login(
@@ -79,32 +115,82 @@ async def login(
     db: AsyncSession = Depends(get_db_session),
 ):
     """
-    Login with email and password.
+    Login with email + password (+ optional MFA code).
 
-    Response includes:
-    - Tokens with an org context when a default/single org can be resolved.
-    - `needs_org_selection: true` + `organizations` list when the user belongs to
-      multiple orgs and has no default set — frontend should show an org picker
-      and call POST /auth/switch-org/{org_id}.
+    Lockout: after 5 consecutive failures the account is locked for 15 min.
+    MFA: if mfa_enabled=True and no mfa_code provided, returns mfa_required=True
+         plus a short-lived mfa_token; client posts that token to /auth/mfa-challenge.
+    Auto-org: if the user has no memberships, a default organization is created
+              automatically and tokens are issued for it.
     """
+    ip = request.client.host if request.client else None
+    ua = request.headers.get("User-Agent")
+
     user, error = await UserService.authenticate_user(
-        db=db, email=credentials.email, password=credentials.password
+        db=db, email=str(credentials.email), password=credentials.password
     )
-    if error:
-        raise HTTPException(status_code=401, detail=error)
+
+    if error or not user:
+        # Increment failed attempts for known accounts
+        locked_user = await db.execute(
+            select(User).where(User.email == str(credentials.email).lower())
+        )
+        found = locked_user.scalar_one_or_none()
+        if found:
+            found.failed_login_attempts = (found.failed_login_attempts or 0) + 1
+            if found.failed_login_attempts >= MAX_FAILED_ATTEMPTS:
+                found.is_locked = True
+                found.locked_until = datetime.utcnow() + timedelta(minutes=LOCKOUT_MINUTES)
+            await AuditService.log(
+                db, "user.login",
+                status="failure",
+                user_id=found.id,
+                ip_address=ip,
+                user_agent=ua,
+                details={"reason": error},
+            )
+            await db.commit()
+        raise HTTPException(status_code=401, detail=error or "Invalid credentials")
+
+    # Check lockout
+    if user.is_locked:
+        if user.locked_until and user.locked_until > datetime.utcnow():
+            wait = int((user.locked_until - datetime.utcnow()).total_seconds() // 60) + 1
+            raise HTTPException(
+                status_code=423,
+                detail=f"Account locked. Try again in {wait} minute(s).",
+            )
+        # Lockout expired — clear it
+        user.is_locked = False
+        user.locked_until = None
+
+    # Reset failed attempts on success
+    user.failed_login_attempts = 0
+    user.last_login_at = datetime.utcnow()
 
     memberships = await UserService.get_user_memberships(db, user.id)
+
+    # ── Auto-create default org on very first login ───────────────────
+    if not memberships:
+        import uuid as _uuid
+        org_id = _uuid.uuid4()
+        org = Organization(id=org_id, name=f"{user.email.split('@')[0]}'s Organization")
+        db.add(org)
+        membership = UserOrganization(
+            user_id=user.id, org_id=org_id, role="owner", is_default=True
+        )
+        db.add(membership)
+        user.organization_id = org_id
+        await db.commit()
+        memberships = await UserService.get_user_memberships(db, user.id)
 
     # Resolve active org
     active_org_id = None
     needs_selection = False
 
-    if len(memberships) == 0:
-        active_org_id = None
-    elif len(memberships) == 1:
+    if len(memberships) == 1:
         active_org_id = memberships[0].org_id
         if not memberships[0].is_default:
-            # auto-promote as default
             memberships[0].is_default = True
             user.organization_id = active_org_id
             await db.commit()
@@ -115,7 +201,41 @@ async def login(
         else:
             needs_selection = True
 
+    # ── MFA challenge ─────────────────────────────────────────────────
+    if user.mfa_enabled:
+        if not credentials.mfa_code:
+            # Return a challenge token; client must call /auth/mfa-challenge
+            mfa_token = _make_mfa_challenge_token(user.id, active_org_id)
+            await AuditService.log(db, "user.mfa_challenge_issued", user_id=user.id, ip_address=ip)
+            await db.commit()
+            return LoginResponse(
+                access_token="",
+                refresh_token="",
+                expires_in=0,
+                org_id=str(active_org_id) if active_org_id else None,
+                needs_org_selection=needs_selection,
+                organizations=_org_summaries(memberships) if needs_selection else [],
+                mfa_required=True,
+                mfa_token=mfa_token,
+            )
+        # MFA code provided inline — verify it
+        mfa_ok = await MfaService.verify_totp_code(db, user.id, credentials.mfa_code)
+        if not mfa_ok:
+            await AuditService.log(
+                db, "user.login", status="failure",
+                user_id=user.id, ip_address=ip, user_agent=ua,
+                details={"reason": "invalid_mfa_code"},
+            )
+            await db.commit()
+            raise HTTPException(status_code=401, detail="Invalid MFA code")
+
     access_token, refresh_token = await _issue_tokens(db, user, active_org_id)
+
+    await AuditService.log(
+        db, "user.login", user_id=user.id,
+        org_id=active_org_id, ip_address=ip, user_agent=ua,
+    )
+    await db.commit()
 
     return LoginResponse(
         access_token=access_token,
@@ -127,21 +247,83 @@ async def login(
     )
 
 
+# ---------------------------------------------------------------------------
+# MFA Challenge (second step)
+# ---------------------------------------------------------------------------
+
+@router.post("/mfa-challenge", response_model=LoginResponse)
+async def mfa_challenge(
+    request: Request,
+    mfa_token: str,
+    code: str,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    Complete an MFA challenge issued during login.
+    Accepts mfa_token + TOTP/backup code, returns full tokens.
+    """
+    ip = request.client.host if request.client else None
+    ua = request.headers.get("User-Agent")
+
+    payload = TokenService.verify_token(mfa_token)
+    if not payload or payload.get("type") != "mfa_challenge":
+        raise HTTPException(status_code=401, detail="Invalid or expired MFA token")
+
+    user_id = UUID(payload["sub"])
+    org_id_raw = payload.get("org_id")
+    org_id = UUID(org_id_raw) if org_id_raw else None
+
+    mfa_ok = await MfaService.verify_totp_code(db, user_id, code)
+    if not mfa_ok:
+        await AuditService.log(
+            db, "user.login", status="failure", user_id=user_id,
+            ip_address=ip, user_agent=ua,
+            details={"reason": "invalid_mfa_code"},
+        )
+        await db.commit()
+        raise HTTPException(status_code=401, detail="Invalid MFA code")
+
+    user_result = await db.execute(select(User).where(User.id == user_id))
+    user = user_result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    access_token, refresh_token = await _issue_tokens(db, user, org_id)
+    await AuditService.log(
+        db, "user.login", user_id=user_id, org_id=org_id,
+        ip_address=ip, user_agent=ua,
+    )
+    await db.commit()
+
+    return LoginResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        org_id=str(org_id) if org_id else None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# My orgs
+# ---------------------------------------------------------------------------
+
 @router.get("/my-orgs", response_model=list[OrgSummary])
 async def my_orgs(
     authorization: str = Header(...),
     db: AsyncSession = Depends(get_db_session),
 ):
-    """List all organizations the current user belongs to."""
     user_info = TokenService.verify_access_token(
         TokenService.get_token_from_header(authorization)
     )
     if not user_info:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
-
     memberships = await UserService.get_user_memberships(db, UUID(user_info["sub"]))
     return _org_summaries(memberships)
 
+
+# ---------------------------------------------------------------------------
+# Switch org
+# ---------------------------------------------------------------------------
 
 @router.post("/switch-org/{org_id}", response_model=TokenResponse)
 async def switch_org(
@@ -149,10 +331,6 @@ async def switch_org(
     authorization: str = Header(...),
     db: AsyncSession = Depends(get_db_session),
 ):
-    """
-    Issue a new token with the chosen org as context.
-    The user must already be a member of that org.
-    """
     payload = TokenService.verify_access_token(
         TokenService.get_token_from_header(authorization)
     )
@@ -181,24 +359,30 @@ async def switch_org(
     )
 
 
+# ---------------------------------------------------------------------------
+# Default org
+# ---------------------------------------------------------------------------
+
 @router.patch("/default-org/{org_id}")
 async def set_default_org(
     org_id: UUID,
     authorization: str = Header(...),
     db: AsyncSession = Depends(get_db_session),
 ):
-    """Set the user's default organization."""
     payload = TokenService.verify_access_token(
         TokenService.get_token_from_header(authorization)
     )
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
-
     success, error = await UserService.set_default_org(db, UUID(payload["sub"]), org_id)
     if not success:
         raise HTTPException(status_code=400, detail=error)
     return {"message": "Default organization updated"}
 
+
+# ---------------------------------------------------------------------------
+# Accept invite
+# ---------------------------------------------------------------------------
 
 @router.post("/accept-invite")
 @limiter.limit("10/minute")
@@ -208,7 +392,6 @@ async def accept_invite(
     authorization: str = Header(...),
     db: AsyncSession = Depends(get_db_session),
 ):
-    """Accept an org invite using the token from the invite email."""
     payload = TokenService.verify_access_token(
         TokenService.get_token_from_header(authorization)
     )
@@ -229,8 +412,6 @@ async def accept_invite(
         raise HTTPException(status_code=400, detail="Invite has expired")
 
     user_id = UUID(payload["sub"])
-
-    # Validate email matches
     user_result = await db.execute(select(User).where(User.id == user_id))
     user = user_result.scalar_one_or_none()
     if not user or user.email.lower() != invite.invited_email.lower():
@@ -244,9 +425,20 @@ async def accept_invite(
         raise HTTPException(status_code=400, detail=error)
 
     invite.accepted_at = datetime.utcnow()
+    await AuditService.log(
+        db, "org.invite_accepted",
+        user_id=user_id,
+        org_id=invite.org_id,
+        resource_type="org",
+        resource_id=str(invite.org_id),
+    )
     await db.commit()
     return {"message": "You have joined the organization", "org_id": str(invite.org_id)}
 
+
+# ---------------------------------------------------------------------------
+# Token refresh / verify / revoke
+# ---------------------------------------------------------------------------
 
 @router.post("/token/refresh", response_model=TokenResponse)
 async def refresh_token(
@@ -277,20 +469,20 @@ async def refresh_token(
         raise HTTPException(status_code=401, detail="Refresh token expired or revoked")
 
     roles = await UserService.get_user_roles(db, user.id)
-    new_access_token = TokenService.create_access_token(user.id, org_id, roles)
-    new_refresh_token = TokenService.create_refresh_token(user.id, org_id)
+    new_access = TokenService.create_access_token(user.id, org_id, roles)
+    new_refresh = TokenService.create_refresh_token(user.id, org_id)
 
     db_token.is_revoked = True
     db.add(RefreshToken(
         user_id=user.id,
-        token_hash=TokenService.hash_token(new_refresh_token),
+        token_hash=TokenService.hash_token(new_refresh),
         expires_at=datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
     ))
     await db.commit()
 
     return TokenResponse(
-        access_token=new_access_token,
-        refresh_token=new_refresh_token,
+        access_token=new_access,
+        refresh_token=new_refresh,
         expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
 
@@ -324,6 +516,10 @@ async def revoke_token(
     return {"message": "Token revoked successfully"}
 
 
+# ---------------------------------------------------------------------------
+# Profile
+# ---------------------------------------------------------------------------
+
 @router.get("/me", response_model=UserResponse)
 async def get_current_user(
     authorization: str = Header(...),
@@ -335,7 +531,6 @@ async def get_current_user(
     payload = TokenService.verify_access_token(token)
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
-
     user = await UserService.get_user_by_id(db, UUID(payload.get("sub")))
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
@@ -347,19 +542,16 @@ async def delete_account(
     authorization: str = Header(...),
     db: AsyncSession = Depends(get_db_session),
 ):
-    """Delete the current user's account permanently."""
     token = TokenService.get_token_from_header(authorization)
     if not token:
         raise HTTPException(status_code=401, detail="Invalid authorization header")
     payload = TokenService.verify_access_token(token)
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
-
     user_id = UUID(payload.get("sub"))
     user = await UserService.get_user_by_id(db, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-
     try:
         await db.delete(user)
         await db.commit()
@@ -379,7 +571,6 @@ async def change_password(
     payload = TokenService.verify_access_token(token) if token else None
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
-
     user = await UserService.get_user_by_id(db, UUID(payload.get("sub")))
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
@@ -387,12 +578,15 @@ async def change_password(
         raise HTTPException(status_code=400, detail="Cannot change password for SSO users")
     if not UserService.verify_password(password_data.old_password, user.password_hash):
         raise HTTPException(status_code=401, detail="Incorrect current password")
-
     success, error = await UserService.update_password(db, user.id, password_data.new_password)
     if not success:
         raise HTTPException(status_code=400, detail=error or "Failed to update password")
     return {"message": "Password changed successfully"}
 
+
+# ---------------------------------------------------------------------------
+# Password reset
+# ---------------------------------------------------------------------------
 
 @router.post("/forgot-password")
 @limiter.limit("5/minute")
@@ -401,11 +595,8 @@ async def forgot_password(
     body: ForgotPasswordRequest,
     db: AsyncSession = Depends(get_db_session),
 ):
-    """Request a password reset link. Email-only, no org required."""
     user = await UserService.get_user_by_email(db, str(body.email))
-
     if user is not None and user.password_hash is not None:
-        # Invalidate old tokens
         old_tokens = await db.execute(
             select(PasswordResetToken).where(
                 PasswordResetToken.user_id == user.id,
@@ -446,7 +637,6 @@ async def verify_reset_token(token: str, db: AsyncSession = Depends(get_db_sessi
     db_token = result.scalar_one_or_none()
     if not db_token or db_token.expires_at < datetime.utcnow():
         return ResetPasswordVerifyResponse(valid=False, message="This reset link is invalid or has expired.")
-
     user_result = await db.execute(select(User).where(User.id == db_token.user_id))
     user = user_result.scalar_one_or_none()
     return ResetPasswordVerifyResponse(valid=True, email=str(user.email) if user else None)
@@ -469,7 +659,6 @@ async def reset_password(
     db_token = result.scalar_one_or_none()
     if not db_token or db_token.expires_at < datetime.utcnow():
         raise HTTPException(status_code=400, detail="This reset link is invalid or has expired.")
-
     db_token.is_used = True
     success, error = await UserService.update_password(db, db_token.user_id, body.new_password)
     if not success:

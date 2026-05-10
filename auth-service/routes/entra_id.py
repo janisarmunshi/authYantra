@@ -184,11 +184,10 @@ async def _process_entra_callback(db: AsyncSession, code: str, state: str, organ
         "refresh_token": refresh_token,
         "token_type": "bearer",
         "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        "redirect_uri": entra_session.redirect_uri,  # Include redirect URI for app
-        "email": user_info["email"],  # User's email from Microsoft
-        "name": user_info.get("name"),  # User's display name from Microsoft
-        "user_id": str(user.id),  # Internal user ID
-        "organization_id": str(organization_id),  # Organization ID
+        "email": user_info["email"],
+        "name": user_info.get("name"),
+        "user_id": str(user.id),
+        "organization_id": str(organization_id),
     }
 
 

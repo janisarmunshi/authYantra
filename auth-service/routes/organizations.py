@@ -3,7 +3,7 @@
 import hashlib
 import secrets
 import uuid as _uuid
-from fastapi import APIRouter, HTTPException, Depends, Header
+from fastapi import APIRouter, HTTPException, Depends, Header, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -11,18 +11,24 @@ from uuid import UUID
 from pydantic import BaseModel
 from datetime import datetime, timedelta
 from database import get_db_session
-from models import Organization, RegisteredApp, User, UserOrganization, OrgInvite
+from models import Organization, RegisteredApp, User, UserOrganization, OrgInvite, RefreshToken
 from schemas import (
     OrganizationCreate, RegisteredAppCreate,
     OrgMemberAdd, OrgMemberResponse, OrgInviteCreate, OrgInviteResponse,
 )
 from services.auth_service import AuthService
 from services.user_service import UserService
+from services.token_service import TokenService
 from services.email_service import send_invite_email
+from config import get_settings
 
 router = APIRouter(tags=["organizations", "apps"])
+settings = get_settings()
 
 INVITE_EXPIRE_HOURS = 72
+
+# Membership roles supported (ordered by privilege)
+MEMBERSHIP_ROLES = ["owner", "admin", "developer", "auditor", "billing", "member"]
 
 
 class EntraIdUpdate(BaseModel):
@@ -49,9 +55,15 @@ def _app_dict(app: RegisteredApp) -> dict:
         "organization_id": str(app.organization_id),
         "app_name": app.app_name,
         "app_type": app.app_type,
+        "client_id": app.client_id,
         "api_key": app.api_key,
-        "redirect_uris": app.redirect_uris,
+        "redirect_uris": app.redirect_uris or [],
+        "allowed_scopes": app.allowed_scopes or [],
+        "allowed_grant_types": app.allowed_grant_types or [],
+        "access_token_lifetime": app.access_token_lifetime or 900,
+        "refresh_token_lifetime": app.refresh_token_lifetime or 604800,
         "is_active": app.is_active,
+        "is_confidential": app.is_confidential if app.is_confidential is not None else True,
         "created_at": app.created_at,
         "updated_at": app.updated_at,
     }
@@ -65,7 +77,11 @@ async def create_organization(
     authorization: str = Header(...),
     db: AsyncSession = Depends(get_db_session),
 ):
-    """Create a new organization. Creator becomes admin and it is auto-set as default if first org."""
+    """
+    Create a new organization.
+    Creator becomes owner. Returns new JWT tokens scoped to the new org
+    so the caller never needs a separate switch-org round-trip.
+    """
     user_info = AuthService.verify_and_get_user(authorization)
     if not user_info:
         raise HTTPException(status_code=401, detail="Authentication required")
@@ -73,11 +89,9 @@ async def create_organization(
     try:
         user_id = UUID(user_info["user_id"])
 
-        # Check membership count BEFORE opening the write transaction
         existing_memberships = await UserService.get_user_memberships(db, user_id)
         is_first = len(existing_memberships) == 0
 
-        # Pre-generate UUID so we don't need db.flush() to get the org id
         org_id = _uuid.uuid4()
         org = Organization(id=org_id, name=data.name)
         db.add(org)
@@ -85,20 +99,41 @@ async def create_organization(
         membership = UserOrganization(
             user_id=user_id,
             org_id=org_id,
-            role="admin",
+            role="owner",          # Creator is always owner
             is_default=is_first,
         )
         db.add(membership)
 
-        if is_first:
-            user_result = await db.execute(select(User).where(User.id == user_id))
-            user = user_result.scalar_one_or_none()
-            if user:
-                user.organization_id = org_id
+        user_result = await db.execute(select(User).where(User.id == user_id))
+        user = user_result.scalar_one_or_none()
+        if user and is_first:
+            user.organization_id = org_id
 
+        # Commit org + membership atomically
         await db.commit()
         await db.refresh(org)
-        return _org_dict(org)
+
+        # Issue new tokens scoped to this org in the same request.
+        # This eliminates the race condition where a subsequent switch-org
+        # call opens a fresh DB connection before the membership is visible.
+        roles = await UserService.get_user_roles(db, user_id)
+        access_token = TokenService.create_access_token(user_id, org_id, roles)
+        new_refresh = TokenService.create_refresh_token(user_id, org_id)
+        db.add(RefreshToken(
+            user_id=user_id,
+            token_hash=TokenService.hash_token(new_refresh),
+            expires_at=datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+        ))
+        await db.commit()
+
+        return {
+            **_org_dict(org),
+            "access_token": access_token,
+            "refresh_token": new_refresh,
+            "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=400, detail=f"Error creating organization: {str(e)}")
@@ -392,8 +427,12 @@ async def create_app(
         organization_id=org_id,
         app_name=data.app_name,
         app_type=data.app_type,
+        client_id=f"client_{secrets.token_urlsafe(16)}",
         api_key=secrets.token_urlsafe(32),
         redirect_uris=data.redirect_uris,
+        allowed_scopes=data.allowed_scopes,
+        allowed_grant_types=data.allowed_grant_types,
+        is_confidential=data.is_confidential,
     )
     db.add(app)
     try:
@@ -511,3 +550,142 @@ async def get_app(
     if not app:
         raise HTTPException(status_code=404, detail="App not found")
     return _app_dict(app)
+
+
+# ── Identity Providers ────────────────────────────────────────────────────────
+
+from models import IdentityProvider
+from schemas import IdentityProviderCreate, IdentityProviderUpdate, IdentityProviderResponse
+from services.crypto_service import encrypt_json, decrypt_json
+
+
+def _idp_dict(idp: IdentityProvider) -> dict:
+    return IdentityProviderResponse(
+        id=str(idp.id),
+        name=idp.name,
+        type=idp.type,
+        is_active=idp.is_active,
+        auto_provision=idp.auto_provision,
+        default_role=idp.default_role,
+        created_at=idp.created_at,
+        updated_at=idp.updated_at,
+    ).model_dump()
+
+
+@router.get("/orgs/{org_id}/idps", response_model=list[IdentityProviderResponse])
+async def list_identity_providers(
+    org_id: UUID,
+    authorization: str = Header(...),
+    db: AsyncSession = Depends(get_db_session),
+):
+    user_info = AuthService.verify_and_get_user(authorization)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    is_authorized, error = await AuthService.verify_org_ownership_or_admin(
+        db, user_info["user_id"], user_info.get("org_id"), org_id
+    )
+    if not is_authorized:
+        raise HTTPException(status_code=403, detail=error or "Access denied")
+
+    result = await db.execute(
+        select(IdentityProvider).where(IdentityProvider.organization_id == org_id)
+    )
+    return [_idp_dict(idp) for idp in result.scalars().all()]
+
+
+@router.post("/orgs/{org_id}/idps", response_model=IdentityProviderResponse)
+async def create_identity_provider(
+    org_id: UUID,
+    data: IdentityProviderCreate,
+    authorization: str = Header(...),
+    db: AsyncSession = Depends(get_db_session),
+):
+    user_info = AuthService.verify_and_get_user(authorization)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    is_super = await AuthService.is_super_user(db, user_info["user_id"], user_info.get("org_id"))
+    is_admin = await AuthService.is_org_admin(db, user_info["user_id"], org_id)
+    if not is_super and not is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    idp = IdentityProvider(
+        organization_id=org_id,
+        name=data.name,
+        type=data.type,
+        config_encrypted=encrypt_json(data.config) if data.config else None,
+        attribute_mapping=data.attribute_mapping,
+        auto_provision=data.auto_provision,
+        default_role=data.default_role,
+    )
+    db.add(idp)
+    await db.commit()
+    await db.refresh(idp)
+    return _idp_dict(idp)
+
+
+@router.patch("/orgs/{org_id}/idps/{idp_id}", response_model=IdentityProviderResponse)
+async def update_identity_provider(
+    org_id: UUID,
+    idp_id: UUID,
+    data: IdentityProviderUpdate,
+    authorization: str = Header(...),
+    db: AsyncSession = Depends(get_db_session),
+):
+    user_info = AuthService.verify_and_get_user(authorization)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    is_super = await AuthService.is_super_user(db, user_info["user_id"], user_info.get("org_id"))
+    is_admin = await AuthService.is_org_admin(db, user_info["user_id"], org_id)
+    if not is_super and not is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    result = await db.execute(
+        select(IdentityProvider).where(IdentityProvider.id == idp_id, IdentityProvider.organization_id == org_id)
+    )
+    idp = result.scalar_one_or_none()
+    if not idp:
+        raise HTTPException(status_code=404, detail="Identity provider not found")
+
+    if data.name is not None:
+        idp.name = data.name
+    if data.config is not None:
+        idp.config_encrypted = encrypt_json(data.config)
+    if data.attribute_mapping is not None:
+        idp.attribute_mapping = data.attribute_mapping
+    if data.auto_provision is not None:
+        idp.auto_provision = data.auto_provision
+    if data.default_role is not None:
+        idp.default_role = data.default_role
+    if data.is_active is not None:
+        idp.is_active = data.is_active
+
+    await db.commit()
+    await db.refresh(idp)
+    return _idp_dict(idp)
+
+
+@router.delete("/orgs/{org_id}/idps/{idp_id}")
+async def delete_identity_provider(
+    org_id: UUID,
+    idp_id: UUID,
+    authorization: str = Header(...),
+    db: AsyncSession = Depends(get_db_session),
+):
+    user_info = AuthService.verify_and_get_user(authorization)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    is_super = await AuthService.is_super_user(db, user_info["user_id"], user_info.get("org_id"))
+    is_admin = await AuthService.is_org_admin(db, user_info["user_id"], org_id)
+    if not is_super and not is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    result = await db.execute(
+        select(IdentityProvider).where(IdentityProvider.id == idp_id, IdentityProvider.organization_id == org_id)
+    )
+    idp = result.scalar_one_or_none()
+    if not idp:
+        raise HTTPException(status_code=404, detail="Identity provider not found")
+
+    await db.delete(idp)
+    await db.commit()
+    return {"message": "Identity provider deleted"}

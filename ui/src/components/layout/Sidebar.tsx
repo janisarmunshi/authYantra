@@ -9,6 +9,7 @@ import {
   LogOut,
   ChevronRight,
   KeyRound,
+  ClipboardList,
 } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
 import { authApi } from '@/api/auth'
@@ -22,6 +23,7 @@ const navItems = [
   { label: 'Roles', to: '/roles', icon: Shield },
   { label: 'Endpoints', to: '/endpoints', icon: Globe },
   { label: 'Applications', to: '/apps', icon: AppWindow },
+  { label: 'Audit Logs', to: '/audit', icon: ClipboardList },
   { label: 'Profile', to: '/profile', icon: KeyRound },
 ]
 
